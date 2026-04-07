@@ -1,24 +1,28 @@
 """MCP server entry point for claude-agent-mcp.
 
-Registers all v0.1 tools, wires dependencies, and runs over stdio transport.
+Registers all v0.1 tools, wires dependencies, and dispatches to the
+selected transport (stdio or streamable-http).
+
+Transport selection:
+  --transport stdio              (default)
+  --transport streamable-http [--host HOST] [--port PORT]
+
+Or via environment:
+  CLAUDE_AGENT_MCP_TRANSPORT=streamable-http
+  CLAUDE_AGENT_MCP_HOST=127.0.0.1
+  CLAUDE_AGENT_MCP_PORT=8000
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
-import logging
 import sys
 from typing import Any
 
-import mcp.server.stdio
 from mcp.server import Server
-from mcp.server.models import InitializationOptions
 from mcp.types import (
-    CallToolRequest,
-    CallToolResult,
-    ListToolsRequest,
-    ListToolsResult,
     TextContent,
     Tool,
 )
@@ -38,6 +42,8 @@ from claude_agent_mcp.tools.run_task import handle_run_task
 from claude_agent_mcp.tools.verify_task import handle_verify_task
 
 logger = get_logger(__name__)
+
+VERSION = "0.2.0"
 
 # ---------------------------------------------------------------------------
 # Tool schemas (JSON Schema for each v0.1 tool)
@@ -183,7 +189,7 @@ TOOL_DEFINITIONS: list[Tool] = [
 
 
 # ---------------------------------------------------------------------------
-# Server wiring
+# Server wiring (transport-agnostic)
 # ---------------------------------------------------------------------------
 
 def build_server(
@@ -191,6 +197,11 @@ def build_server(
     artifact_store: ArtifactStore,
     executor: WorkflowExecutor,
 ) -> Server:
+    """Build and return the MCP Server with all v0.1 tools registered.
+
+    This function is transport-agnostic. Both stdio and streamable-http
+    transports call this to obtain the same server instance.
+    """
     server = Server("claude-agent-mcp")
 
     @server.list_tools()
@@ -225,12 +236,14 @@ def build_server(
     return server
 
 
-async def run() -> None:
-    config = get_config()
-    configure_logging(config.log_level)
-    logger.info("Starting claude-agent-mcp (model=%s)", config.model)
+# ---------------------------------------------------------------------------
+# Runtime setup (shared by both transports)
+# ---------------------------------------------------------------------------
 
-    # Dependency setup
+async def _setup_runtime(config):
+    """Open stores and build executor. Returns (session_store, artifact_store, executor)."""
+    config.ensure_dirs()
+
     session_store = SessionStore(config)
     await session_store.open()
 
@@ -248,29 +261,103 @@ async def run() -> None:
         agent_adapter=agent_adapter,
     )
 
-    server = build_server(session_store, artifact_store, executor)
+    return session_store, artifact_store, executor
 
+
+# ---------------------------------------------------------------------------
+# Transport runners
+# ---------------------------------------------------------------------------
+
+async def run_stdio(config) -> None:
+    from claude_agent_mcp.transports.stdio import run_stdio as _run_stdio
+
+    session_store, artifact_store, executor = await _setup_runtime(config)
+    server = build_server(session_store, artifact_store, executor)
     try:
-        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                InitializationOptions(
-                    server_name="claude-agent-mcp",
-                    server_version="0.1.0",
-                    capabilities=server.get_capabilities(
-                        notification_options=None,
-                        experimental_capabilities={},
-                    ),
-                ),
-            )
+        await _run_stdio(server, session_store)
     finally:
         await session_store.close()
-        logger.info("claude-agent-mcp shut down cleanly")
+        logger.info("claude-agent-mcp (stdio) shut down cleanly")
+
+
+async def run_streamable_http(config) -> None:
+    from claude_agent_mcp.transports.streamable_http import run_streamable_http as _run_http
+
+    session_store, artifact_store, executor = await _setup_runtime(config)
+    server = build_server(session_store, artifact_store, executor)
+    try:
+        await _run_http(server, host=config.host, port=config.port)
+    finally:
+        await session_store.close()
+        logger.info("claude-agent-mcp (streamable-http) shut down cleanly")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="claude-agent-mcp",
+        description="Sessioned Claude-backed agent runtime over MCP",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"claude-agent-mcp {VERSION}",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default=None,
+        help="Transport to use (default: CLAUDE_AGENT_MCP_TRANSPORT env var, or stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="Bind host for streamable-http transport (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Bind port for streamable-http transport (default: 8000)",
+    )
+    return parser
 
 
 def main() -> None:
-    asyncio.run(run())
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    # Config is loaded from env first; CLI flags override specific fields.
+    config = get_config()
+
+    if args.transport is not None:
+        config.transport = args.transport
+    if args.host is not None:
+        config.host = args.host
+    if args.port is not None:
+        config.port = args.port
+
+    config.validate()
+    configure_logging(config.log_level)
+
+    logger.info(
+        "Starting claude-agent-mcp v%s transport=%s model=%s",
+        VERSION,
+        config.transport,
+        config.model,
+    )
+
+    if config.transport == "stdio":
+        asyncio.run(run_stdio(config))
+    elif config.transport == "streamable-http":
+        logger.info("Binding to %s:%d", config.host, config.port)
+        asyncio.run(run_streamable_http(config))
+    else:
+        # Should be unreachable after validate()
+        sys.exit(f"Unknown transport: {config.transport}")
 
 
 if __name__ == "__main__":

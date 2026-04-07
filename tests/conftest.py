@@ -19,6 +19,14 @@ from claude_agent_mcp.runtime.session_store import SessionStore
 from claude_agent_mcp.runtime.workflow_executor import WorkflowExecutor
 from claude_agent_mcp.types import NormalizedProviderResult
 
+# ── additional config attributes required by v0.2 ──────────────────────────
+# These defaults keep existing tests passing without modification.
+_CONFIG_V02_DEFAULTS = {
+    "transport": "stdio",
+    "host": "127.0.0.1",
+    "port": 8000,
+}
+
 
 @pytest.fixture
 def tmp_state_dir(tmp_path: Path) -> Path:
@@ -40,6 +48,10 @@ def config(tmp_state_dir: Path, tmp_path: Path) -> Config:
     cfg.allowed_dirs = [str(tmp_path), str(Path.cwd().resolve())]
     cfg.max_artifact_bytes = 10 * 1024 * 1024
     cfg.log_level = "WARNING"
+    # v0.2 transport fields
+    cfg.transport = "stdio"
+    cfg.host = "127.0.0.1"
+    cfg.port = 8000
     return cfg
 
 
@@ -69,6 +81,12 @@ def mock_adapter() -> ClaudeAdapter:
         )
     )
     return adapter
+
+
+@pytest.fixture
+def artifact_store_fixture(config: Config, session_store: SessionStore) -> ArtifactStore:
+    """Standalone ArtifactStore fixture for transport tests."""
+    return ArtifactStore(config, session_store.db)
 
 
 @pytest.fixture
