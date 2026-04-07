@@ -151,7 +151,7 @@ class SessionStore:
         *,
         status: SessionStatus | None = None,
         turn_count: int | None = None,
-        artifact_count: int | None = None,
+        artifact_count_delta: int = 0,
         summary_latest: str | None = None,
         provider_session_id: str | None = None,
         request_count_delta: int = 0,
@@ -166,9 +166,9 @@ class SessionStore:
         if turn_count is not None:
             parts.append("turn_count = ?")
             params.append(turn_count)
-        if artifact_count is not None:
-            parts.append("artifact_count = ?")
-            params.append(artifact_count)
+        if artifact_count_delta:
+            parts.append("artifact_count = artifact_count + ?")
+            params.append(artifact_count_delta)
         if summary_latest is not None:
             parts.append("summary_latest = ?")
             params.append(summary_latest)

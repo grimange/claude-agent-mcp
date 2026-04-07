@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from claude_agent_mcp.config import Config
@@ -209,14 +211,23 @@ class WorkflowExecutor:
         profile = self._profiles.get(session.profile)
         max_turns = self._profiles.resolve_turns(profile, req.max_turns)
 
-        warnings: list[str] = []
-
+        # Policy validation must happen before the operational try block so that a
+        # denial returns a clean error without corrupting the session status.
         try:
-            # Validate continuation policy
             self._policy.validate_continuation(
                 profile, session.status, session.turn_count, max_turns
             )
+        except (PolicyDeniedError, ValidationError) as exc:
+            return self._error_response(
+                session_id=req.session_id,
+                workflow=WorkflowName.continue_session,
+                profile=session.profile,
+                error=exc,
+            )
 
+        warnings: list[str] = []
+
+        try:
             await self._sessions.acquire_lock(req.session_id, lock_owner)
             await self._sessions.update_session(
                 req.session_id,
@@ -318,7 +329,6 @@ class WorkflowExecutor:
         # structured verification error rather than a generic policy error).
         evidence_issues: list[str] = []
         for ep in req.evidence_paths:
-            from pathlib import Path
             p = Path(ep) if Path(ep).is_absolute() else Path.cwd() / ep
             if not p.exists():
                 evidence_issues.append(f"Evidence path not found: {ep}")
@@ -435,6 +445,9 @@ class WorkflowExecutor:
         except AgentMCPError as exc:
             logger.exception("Workflow error in verify_task: %s", exc)
             await self._sessions.update_session(session_id, status=SessionStatus.failed)
+            await self._sessions.append_event(
+                session_id, EventType.error_event, 0, {"error": exc.to_dict()}
+            )
             response = self._error_response(
                 session_id=session_id,
                 workflow=WorkflowName.verify_task,
@@ -510,8 +523,6 @@ class WorkflowExecutor:
 
         Looks for labeled sections. Falls back to fail_closed / insufficient_evidence.
         """
-        import re
-
         verdict = None
         findings: list[str] = []
         contradictions: list[str] = []
@@ -588,7 +599,7 @@ class WorkflowExecutor:
                 turn_index=turn_count,
                 producer_tool=workflow.value,
             )
-            await self._sessions.update_session(session_id, artifact_count=1)
+            await self._sessions.update_session(session_id, artifact_count_delta=1)
             return [self._artifacts.to_reference(rec)]
         except Exception as exc:
             logger.warning("Failed to save output artifact: %s", exc)
@@ -618,7 +629,7 @@ class WorkflowExecutor:
                 turn_index=turn_count,
                 producer_tool="verify_task",
             )
-            await self._sessions.update_session(session_id, artifact_count=1)
+            await self._sessions.update_session(session_id, artifact_count_delta=1)
             return [self._artifacts.to_reference(rec)]
         except Exception as exc:
             logger.warning("Failed to save verification report: %s", exc)

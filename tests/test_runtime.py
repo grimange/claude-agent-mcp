@@ -151,6 +151,45 @@ async def test_continue_session_missing_session(executor):
 
 
 @pytest.mark.asyncio
+async def test_continue_session_policy_denied_does_not_change_status(
+    executor, session_store
+):
+    """A policy-denied continuation must not mark the session as failed.
+
+    Simulate a session stuck in 'running' (e.g. concurrent execution) and
+    verify that the policy denial leaves the session status unchanged.
+    """
+    from claude_agent_mcp.types import ContinueSessionRequest
+
+    # Run a task to completion first
+    run_req = RunTaskRequest(task="First task")
+    run_resp = await executor.run_task(run_req)
+    assert run_resp.ok is True
+
+    # Manually force the session back to 'running' to simulate concurrent execution.
+    # validate_continuation denies continuations of running sessions.
+    await session_store.update_session(
+        run_resp.session_id, status=SessionStatus.running
+    )
+
+    cont_req = ContinueSessionRequest(
+        session_id=run_resp.session_id,
+        message="Follow-up",
+    )
+    cont_resp = await executor.continue_session(cont_req)
+
+    assert cont_resp.ok is False
+    assert any(
+        (e.code if hasattr(e, "code") else e.get("code")) == "policy_denied"
+        for e in cont_resp.errors
+    )
+
+    # Session must remain 'running' — NOT changed to 'failed' by the policy denial
+    detail_after = await session_store.get_session_detail(run_resp.session_id)
+    assert detail_after.status == SessionStatus.running
+
+
+@pytest.mark.asyncio
 async def test_run_task_provider_error_marks_session_failed(
     config, session_store, tmp_path
 ):

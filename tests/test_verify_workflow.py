@@ -180,3 +180,53 @@ async def test_verify_task_insufficient_without_fail_closed(config, session_stor
     response = await executor.verify_task(req)
 
     assert response.result["verdict"] == VerificationVerdict.insufficient_evidence.value
+
+
+@pytest.mark.asyncio
+async def test_verify_early_fail_closed_response_has_all_result_fields(
+    config, session_store, tmp_path
+):
+    """The early fail_closed path (missing evidence) must include all 5 result fields."""
+    executor = _make_executor_with_output(config, session_store, PASS_OUTPUT)
+    req = VerifyTaskRequest(
+        task="Verify with nonexistent evidence",
+        evidence_paths=[str(tmp_path / "does_not_exist.txt")],
+        fail_closed=True,
+    )
+    response = await executor.verify_task(req)
+
+    assert response.ok is False
+    assert response.workflow == WorkflowName.verify_task
+    assert response.profile == ProfileName.verification
+    result = response.result
+    for key in ("verdict", "findings", "contradictions", "missing_evidence", "restrictions"):
+        assert key in result, f"Missing result field in early fail_closed response: {key}"
+    assert result["verdict"] == VerificationVerdict.fail_closed.value
+
+
+@pytest.mark.asyncio
+async def test_verify_task_unrecognized_verdict_falls_back_to_fail_closed(
+    config, session_store
+):
+    """When the model output has no recognizable VERDICT, fail_closed=True must produce fail_closed."""
+    gibberish_output = "I cannot determine the answer at this time."
+    executor = _make_executor_with_output(config, session_store, gibberish_output)
+    req = VerifyTaskRequest(task="Verify something", fail_closed=True)
+    response = await executor.verify_task(req)
+
+    assert response.ok is True
+    assert response.result["verdict"] == VerificationVerdict.fail_closed.value
+
+
+@pytest.mark.asyncio
+async def test_verify_task_unrecognized_verdict_without_fail_closed_gives_insufficient(
+    config, session_store
+):
+    """When the model output has no recognizable VERDICT and fail_closed=False, give insufficient_evidence."""
+    gibberish_output = "Hmm I'm not sure."
+    executor = _make_executor_with_output(config, session_store, gibberish_output)
+    req = VerifyTaskRequest(task="Verify something", fail_closed=False)
+    response = await executor.verify_task(req)
+
+    assert response.ok is True
+    assert response.result["verdict"] == VerificationVerdict.insufficient_evidence.value

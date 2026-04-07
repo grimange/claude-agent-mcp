@@ -152,6 +152,63 @@ async def test_crash_recovery_marks_running_as_interrupted(config):
 
 
 @pytest.mark.asyncio
+async def test_expire_stale_locks(session_store: SessionStore):
+    """expire_stale_locks must clear expired locks and leave valid ones."""
+    session = await session_store.create_session(
+        WorkflowName.run_task, ProfileName.general
+    )
+    sid = session.session_id
+
+    # Insert a lock that has already expired
+    past = (datetime.now(tz=timezone.utc) - timedelta(seconds=3600)).isoformat()
+    await session_store.db.execute(
+        "UPDATE sessions SET locked_by = ?, lock_expires_at = ? WHERE session_id = ?",
+        ("stale_owner", past, sid),
+    )
+    await session_store.db.commit()
+
+    cleared = await session_store.expire_stale_locks()
+    assert cleared == 1
+
+    rec = await session_store.get_session(sid)
+    assert rec.locked_by is None
+    assert rec.lock_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_expire_stale_locks_preserves_active_lock(session_store: SessionStore):
+    """expire_stale_locks must not clear a lock that has not yet expired."""
+    session = await session_store.create_session(
+        WorkflowName.run_task, ProfileName.general
+    )
+    sid = session.session_id
+
+    await session_store.acquire_lock(sid, "active_owner")
+
+    cleared = await session_store.expire_stale_locks()
+    assert cleared == 0
+
+    rec = await session_store.get_session(sid)
+    assert rec.locked_by == "active_owner"
+
+
+@pytest.mark.asyncio
+async def test_artifact_count_increments(session_store: SessionStore):
+    """artifact_count_delta must accumulate, not overwrite."""
+    session = await session_store.create_session(
+        WorkflowName.run_task, ProfileName.general
+    )
+    sid = session.session_id
+
+    await session_store.update_session(sid, artifact_count_delta=1)
+    await session_store.update_session(sid, artifact_count_delta=1)
+    await session_store.update_session(sid, artifact_count_delta=1)
+
+    rec = await session_store.get_session(sid)
+    assert rec.artifact_count == 3
+
+
+@pytest.mark.asyncio
 async def test_session_persists_across_reopen(config):
     """Session data must be durable across store close/reopen."""
     store1 = SessionStore(config)
