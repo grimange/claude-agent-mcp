@@ -104,6 +104,7 @@ def test_config_valid_stdio():
     cfg.host = "127.0.0.1"
     cfg.port = 8000
     cfg.log_level = "INFO"
+    cfg.execution_backend = "api"
     # validate() must not raise
     cfg.validate()
 
@@ -116,6 +117,7 @@ def test_config_valid_streamable_http():
     cfg.host = "127.0.0.1"
     cfg.port = 9000
     cfg.log_level = "DEBUG"
+    cfg.execution_backend = "api"
     cfg.validate()
 
 
@@ -127,6 +129,7 @@ def test_config_invalid_transport_raises():
     cfg.host = "127.0.0.1"
     cfg.port = 8000
     cfg.log_level = "INFO"
+    cfg.execution_backend = "api"
     with pytest.raises(SystemExit):
         cfg.validate()
 
@@ -139,6 +142,7 @@ def test_config_invalid_port_raises():
     cfg.host = "127.0.0.1"
     cfg.port = 99999
     cfg.log_level = "INFO"
+    cfg.execution_backend = "api"
     with pytest.raises(SystemExit):
         cfg.validate()
 
@@ -151,6 +155,7 @@ def test_config_invalid_log_level_raises():
     cfg.host = "127.0.0.1"
     cfg.port = 8000
     cfg.log_level = "VERBOSE"
+    cfg.execution_backend = "api"
     with pytest.raises(SystemExit):
         cfg.validate()
 

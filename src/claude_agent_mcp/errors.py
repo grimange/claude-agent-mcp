@@ -91,6 +91,46 @@ class ConfigurationError(AgentMCPError):
 
 
 # ---------------------------------------------------------------------------
+# Execution backend errors (v0.4)
+# ---------------------------------------------------------------------------
+
+
+class ExecutionBackendConfigError(AgentMCPError):
+    """Selected execution backend is unknown or misconfigured."""
+
+    code = "execution_backend_config_error"
+    message = "Execution backend configuration error"
+
+
+class ExecutionBackendUnavailableError(AgentMCPError):
+    """Selected execution backend is not available in the current environment."""
+
+    code = "execution_backend_unavailable"
+    message = "Execution backend is not available"
+
+
+class ExecutionBackendAuthError(AgentMCPError):
+    """Selected execution backend lacks required authentication credentials."""
+
+    code = "execution_backend_auth_error"
+    message = "Execution backend authentication failed"
+
+
+class ClaudeCodeUnavailableError(ExecutionBackendUnavailableError):
+    """Claude Code CLI is not installed or not accessible."""
+
+    code = "claude_code_unavailable"
+    message = "Claude Code CLI is not available"
+
+
+class ClaudeCodeInvocationError(AgentMCPError):
+    """Claude Code CLI invocation failed during task execution."""
+
+    code = "claude_code_invocation_error"
+    message = "Claude Code CLI invocation failed"
+
+
+# ---------------------------------------------------------------------------
 # Federation errors (v0.3)
 # ---------------------------------------------------------------------------
 

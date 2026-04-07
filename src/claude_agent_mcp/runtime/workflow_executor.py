@@ -26,9 +26,9 @@ from claude_agent_mcp.errors import (
     SessionStatusError,
     ValidationError,
 )
+from claude_agent_mcp.backends.base import ExecutionBackend
 from claude_agent_mcp.federation.invoker import DownstreamToolInvoker, build_invoker
 from claude_agent_mcp.federation.visibility import ToolVisibilityResolver
-from claude_agent_mcp.runtime.agent_adapter import ClaudeAdapter
 from claude_agent_mcp.runtime.artifact_store import ArtifactStore
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
 from claude_agent_mcp.runtime.profile_registry import Profile, ProfileRegistry
@@ -62,7 +62,7 @@ class WorkflowExecutor:
         artifact_store: ArtifactStore,
         policy_engine: PolicyEngine,
         profile_registry: ProfileRegistry,
-        agent_adapter: ClaudeAdapter,
+        execution_backend: ExecutionBackend,
         # Optional federation components (v0.3) — None means federation is inactive
         visibility_resolver: ToolVisibilityResolver | None = None,
         federation_server_configs: list | None = None,
@@ -72,7 +72,7 @@ class WorkflowExecutor:
         self._artifacts = artifact_store
         self._policy = policy_engine
         self._profiles = profile_registry
-        self._adapter = agent_adapter
+        self._backend = execution_backend
         self._visibility_resolver: ToolVisibilityResolver | None = visibility_resolver
         self._federation_server_configs: list = federation_server_configs or []
 
@@ -140,7 +140,7 @@ class WorkflowExecutor:
                     session_id, EventType.downstream_tool_catalog_resolved, 0,
                     {"visible_tools": [t["name"] for t in visible_tools]},
                 )
-                result = await self._adapter.run_with_tools(
+                result = await self._backend.execute(
                     system_prompt=profile.system_prompt,
                     task=req.task,
                     max_turns=max_turns,
@@ -148,7 +148,7 @@ class WorkflowExecutor:
                     tool_executor=self._make_tool_executor(invoker, session_id, 0),
                 )
             else:
-                result = await self._adapter.run(
+                result = await self._backend.execute(
                     system_prompt=profile.system_prompt,
                     task=req.task,
                     max_turns=max_turns,
@@ -279,7 +279,7 @@ class WorkflowExecutor:
                     req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
                     {"visible_tools": [t["name"] for t in visible_tools]},
                 )
-                result = await self._adapter.run_with_tools(
+                result = await self._backend.execute(
                     system_prompt=profile.system_prompt,
                     task=req.message,
                     max_turns=max_turns,
@@ -288,11 +288,11 @@ class WorkflowExecutor:
                     conversation_history=history,
                 )
             else:
-                result = await self._adapter.continue_run(
+                result = await self._backend.execute(
                     system_prompt=profile.system_prompt,
-                    message=req.message,
-                    conversation_history=history,
+                    task=req.message,
                     max_turns=max_turns,
+                    conversation_history=history,
                 )
 
             warnings.extend(result.warnings)
@@ -432,7 +432,7 @@ class WorkflowExecutor:
                 session_id, EventType.provider_request_start, 0, {}
             )
 
-            raw_result = await self._adapter.run(
+            raw_result = await self._backend.execute(
                 system_prompt=profile.system_prompt,
                 task=task_prompt,
                 max_turns=max_turns,

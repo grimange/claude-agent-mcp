@@ -193,13 +193,14 @@ async def test_continue_session_policy_denied_does_not_change_status(
 async def test_run_task_provider_error_marks_session_failed(
     config, session_store, tmp_path
 ):
-    from claude_agent_mcp.runtime.agent_adapter import ClaudeAdapter
+    from claude_agent_mcp.backends.base import ExecutionBackend
     from claude_agent_mcp.runtime.artifact_store import ArtifactStore
     from claude_agent_mcp.runtime.policy_engine import PolicyEngine
     from claude_agent_mcp.runtime.profile_registry import ProfileRegistry
 
-    bad_adapter = MagicMock(spec=ClaudeAdapter)
-    bad_adapter.run = AsyncMock(side_effect=Exception("API failure"))
+    bad_backend = MagicMock(spec=ExecutionBackend)
+    bad_backend.name = "api"
+    bad_backend.execute = AsyncMock(side_effect=Exception("API failure"))
 
     exec2 = WorkflowExecutor(
         config=config,
@@ -207,7 +208,7 @@ async def test_run_task_provider_error_marks_session_failed(
         artifact_store=ArtifactStore(config, session_store.db),
         policy_engine=PolicyEngine(config),
         profile_registry=ProfileRegistry(),
-        agent_adapter=bad_adapter,
+        execution_backend=bad_backend,
     )
 
     req = RunTaskRequest(task="Fail me")

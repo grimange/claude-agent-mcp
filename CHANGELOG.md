@@ -7,6 +7,81 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] — 2026-04-07
+
+### Execution backend track release
+
+This release introduces pluggable execution backend support.
+Operators can now choose between the Anthropic API and Claude Code as the execution substrate.
+No new public workflow tools, profiles, or session semantics were added.
+All v0.3 MCP tool contracts and response envelopes are unchanged.
+
+### Added
+
+- **Execution backend abstraction** — new `backends/` package introducing a formal
+  `ExecutionBackend` interface. Backends are pluggable execution substrates; the
+  workflow executor, session model, policy engine, and MCP surface remain unchanged.
+- **`backends/base.py`** — `ExecutionBackend` ABC with `name`, `validate_startup()`,
+  `is_available()`, and a unified `execute()` method covering both fresh tasks and
+  session continuations.
+- **`backends/registry.py`** — `BackendRegistry` for explicit named backend selection.
+  Unknown backend names fail clearly; there is no silent fallback between backends.
+- **`backends/api_backend.py`** — `ApiExecutionBackend`, the default backend.
+  Wraps the existing `ClaudeAdapter` with no behavior change. Authenticated via
+  `ANTHROPIC_API_KEY`. Fails at startup if the key is absent.
+- **`backends/claude_code_backend.py`** — `ClaudeCodeExecutionBackend`, a CLI-backed
+  backend that executes tasks via `claude --print <prompt>` as a subprocess.
+  Authenticated via Claude Code's own login state (`claude login`), not API keys.
+  Startup validation confirms the CLI is present and executable. Does not forward
+  federation tools in v0.4 (warning included in response).
+- **Backend selection config** — `CLAUDE_AGENT_MCP_EXECUTION_BACKEND` env var.
+  Supported values: `api` (default), `claude_code`. Unknown values cause a startup
+  failure with a clear error.
+- **Claude Code backend config** — `CLAUDE_AGENT_MCP_CLAUDE_CODE_CLI_PATH` (optional
+  path to CLI binary) and `CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT` (seconds, default 300).
+- **Backend error taxonomy** — five new error classes: `ExecutionBackendConfigError`,
+  `ExecutionBackendUnavailableError`, `ExecutionBackendAuthError`,
+  `ClaudeCodeUnavailableError`, `ClaudeCodeInvocationError`.
+- **Docs** — `docs/execution-backends.md` (backend overview, selection, and error
+  reference) and `docs/claude-code-backend.md` (Claude Code backend setup, limitations,
+  and troubleshooting).
+- **Tests** — `tests/test_backends.py` (35 tests covering registry, config validation,
+  API backend startup and routing, Claude Code backend startup and execution, and the
+  `build_backend` factory). Total test count: 167 (up from 132).
+
+### Changed
+
+- `workflow_executor.py` — `WorkflowExecutor` now accepts `execution_backend:
+  ExecutionBackend` (replaces `agent_adapter: ClaudeAdapter`). All adapter calls
+  replaced with `self._backend.execute()`. No behavioral change for the `api` backend.
+- `server.py` — `_setup_runtime()` calls `build_backend(config)` to resolve the
+  configured backend; logs the selected backend name at startup. Version bumped to `0.4.0`.
+- `config.py` — added `execution_backend`, `claude_code_cli_path`, and
+  `claude_code_timeout_seconds` fields; `validate()` now rejects unknown backend names.
+- `conftest.py` — `mock_adapter` fixture updated to mock `ExecutionBackend.execute`;
+  `executor` fixture updated to use `execution_backend=` parameter.
+
+### Backend invariants enforced
+
+- Backend selection is explicit and validated at startup — no magic inference.
+- API credentials (`ANTHROPIC_API_KEY`) and Claude Code login state are separate auth
+  models; the Claude Code backend does not use `ANTHROPIC_API_KEY`.
+- Backends receive the already-filtered visible tool set — they do not own federation
+  policy or allowlist logic.
+- Internal session identity (`session_id`) remains the canonical identifier regardless
+  of backend. Backend metadata is stored in the session `provider` field for
+  observability only.
+- Canonical `AgentResponse` envelope shape is unchanged across all backends.
+
+### Known limitations (claude_code backend, v0.4)
+
+- Single-turn execution only; no native multi-turn tool-use loop.
+- Downstream federation tools are not forwarded to the CLI.
+- Conversation history is serialised as plain text in the prompt.
+- `stop_reason` is always reported as `end_turn`.
+
+---
+
 ## [0.3.0] — 2026-04-07
 
 ### Federation track release

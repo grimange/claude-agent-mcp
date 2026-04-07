@@ -129,4 +129,8 @@ def _make_test_config(transport: str = "stdio"):
     cfg.lock_ttl_seconds = 60
     cfg.max_artifact_bytes = 10 * 1024 * 1024
     cfg.anthropic_api_key = "test-key"
+    # v0.4 backend fields
+    cfg.execution_backend = "api"
+    cfg.claude_code_cli_path = ""
+    cfg.claude_code_timeout_seconds = 300
     return cfg

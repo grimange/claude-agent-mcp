@@ -4,7 +4,7 @@ Reads from environment variables (with .env support).
 All paths are resolved to absolute strings at load time.
 
 Environment variable reference:
-  ANTHROPIC_API_KEY               — Claude API key (required for execution)
+  ANTHROPIC_API_KEY               — Claude API key (required for api backend)
   CLAUDE_AGENT_MCP_TRANSPORT      — Transport mode: stdio | streamable-http (default: stdio)
   CLAUDE_AGENT_MCP_HOST           — Bind host for network transport (default: 127.0.0.1)
   CLAUDE_AGENT_MCP_PORT           — Bind port for network transport (default: 8000)
@@ -15,6 +15,11 @@ Environment variable reference:
   CLAUDE_AGENT_MCP_MODEL          — Claude model (default: claude-sonnet-4-6)
   CLAUDE_AGENT_MCP_LOCK_TTL       — Session lock TTL in seconds (default: 300)
   CLAUDE_AGENT_MCP_ALLOWED_DIRS   — Comma-separated allowed working directories
+
+Execution backend variables (v0.4):
+  CLAUDE_AGENT_MCP_EXECUTION_BACKEND       — Backend: api | claude_code (default: api)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_CLI_PATH    — Path to claude CLI binary (claude_code backend)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT     — CLI timeout in seconds (default: 300)
 
 Federation variables (v0.3):
   CLAUDE_AGENT_MCP_FEDERATION_ENABLED   — Enable downstream federation (default: false)
@@ -36,6 +41,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 VALID_TRANSPORTS = {"stdio", "streamable-http"}
+VALID_EXECUTION_BACKENDS = {"api", "claude_code"}
 
 
 def _env(primary: str, fallback: str | None = None, default: str = "") -> str:
@@ -113,6 +119,19 @@ class Config:
             "CLAUDE_AGENT_MCP_LOG_LEVEL", "CLAUDE_AGENT_LOG_LEVEL", default="INFO"
         ).upper()
 
+        # --- Execution backend (v0.4) ---
+        self.execution_backend: str = _env(
+            "CLAUDE_AGENT_MCP_EXECUTION_BACKEND", default="api"
+        ).strip().lower()
+
+        # Claude Code backend config
+        self.claude_code_cli_path: str = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_CLI_PATH", default=""
+        ).strip()
+        self.claude_code_timeout_seconds: int = int(
+            _env("CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT", default="300").strip()
+        )
+
         # --- Federation (v0.3) ---
         federation_enabled_raw = _env(
             "CLAUDE_AGENT_MCP_FEDERATION_ENABLED", default="false"
@@ -145,6 +164,12 @@ class Config:
         if self.log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             errors.append(
                 f"CLAUDE_AGENT_MCP_LOG_LEVEL={self.log_level!r} is not a valid log level"
+            )
+
+        if self.execution_backend not in VALID_EXECUTION_BACKENDS:
+            errors.append(
+                f"CLAUDE_AGENT_MCP_EXECUTION_BACKEND={self.execution_backend!r} is not valid. "
+                f"Choose from: {sorted(VALID_EXECUTION_BACKENDS)}"
             )
 
         if errors:

@@ -27,10 +27,10 @@ from mcp.types import (
     Tool,
 )
 
+from claude_agent_mcp.backends import build_backend
 from claude_agent_mcp.config import get_config
 from claude_agent_mcp.federation import FederationManager
 from claude_agent_mcp.logging import configure_logging, get_logger
-from claude_agent_mcp.runtime.agent_adapter import ClaudeAdapter
 from claude_agent_mcp.runtime.artifact_store import ArtifactStore
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
 from claude_agent_mcp.runtime.profile_registry import ProfileRegistry
@@ -44,7 +44,7 @@ from claude_agent_mcp.tools.verify_task import handle_verify_task
 
 logger = get_logger(__name__)
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # ---------------------------------------------------------------------------
 # Tool schemas (JSON Schema for each v0.1 tool)
@@ -251,7 +251,13 @@ async def _setup_runtime(config):
     artifact_store = ArtifactStore(config, session_store.db)
     policy_engine = PolicyEngine(config)
     profile_registry = ProfileRegistry()
-    agent_adapter = ClaudeAdapter(config)
+
+    # Resolve and validate execution backend (v0.4)
+    execution_backend = build_backend(config)
+    logger.info(
+        "Execution backend: %s",
+        execution_backend.name,
+    )
 
     # Initialize federation (v0.3) — disabled by default, no-op if not configured
     federation = await FederationManager.build(config)
@@ -267,7 +273,7 @@ async def _setup_runtime(config):
         artifact_store=artifact_store,
         policy_engine=policy_engine,
         profile_registry=profile_registry,
-        agent_adapter=agent_adapter,
+        execution_backend=execution_backend,
         visibility_resolver=federation.visibility_resolver if federation.is_active() else None,
         federation_server_configs=federation.server_configs,
     )
@@ -355,10 +361,11 @@ def main() -> None:
     configure_logging(config.log_level)
 
     logger.info(
-        "Starting claude-agent-mcp v%s transport=%s model=%s",
+        "Starting claude-agent-mcp v%s transport=%s model=%s backend=%s",
         VERSION,
         config.transport,
         config.model,
+        config.execution_backend,
     )
 
     if config.transport == "stdio":

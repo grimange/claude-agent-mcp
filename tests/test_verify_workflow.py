@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from claude_agent_mcp.runtime.agent_adapter import ClaudeAdapter
+from claude_agent_mcp.backends.base import ExecutionBackend
 from claude_agent_mcp.runtime.artifact_store import ArtifactStore
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
 from claude_agent_mcp.runtime.profile_registry import ProfileRegistry
@@ -23,8 +23,9 @@ from claude_agent_mcp.types import (
 
 
 def _make_executor_with_output(config, session_store, output_text: str) -> WorkflowExecutor:
-    adapter = MagicMock(spec=ClaudeAdapter)
-    adapter.run = AsyncMock(
+    backend = MagicMock(spec=ExecutionBackend)
+    backend.name = "api"
+    backend.execute = AsyncMock(
         return_value=NormalizedProviderResult(
             output_text=output_text,
             turn_count=1,
@@ -37,7 +38,7 @@ def _make_executor_with_output(config, session_store, output_text: str) -> Workf
         artifact_store=ArtifactStore(config, session_store.db),
         policy_engine=PolicyEngine(config),
         profile_registry=ProfileRegistry(),
-        agent_adapter=adapter,
+        execution_backend=backend,
     )
 
 
