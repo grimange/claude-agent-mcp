@@ -26,6 +26,8 @@ from claude_agent_mcp.errors import (
     SessionStatusError,
     ValidationError,
 )
+from claude_agent_mcp.federation.invoker import DownstreamToolInvoker, build_invoker
+from claude_agent_mcp.federation.visibility import ToolVisibilityResolver
 from claude_agent_mcp.runtime.agent_adapter import ClaudeAdapter
 from claude_agent_mcp.runtime.artifact_store import ArtifactStore
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
@@ -61,6 +63,9 @@ class WorkflowExecutor:
         policy_engine: PolicyEngine,
         profile_registry: ProfileRegistry,
         agent_adapter: ClaudeAdapter,
+        # Optional federation components (v0.3) — None means federation is inactive
+        visibility_resolver: ToolVisibilityResolver | None = None,
+        federation_server_configs: list | None = None,
     ) -> None:
         self._config = config
         self._sessions = session_store
@@ -68,6 +73,8 @@ class WorkflowExecutor:
         self._policy = policy_engine
         self._profiles = profile_registry
         self._adapter = agent_adapter
+        self._visibility_resolver: ToolVisibilityResolver | None = visibility_resolver
+        self._federation_server_configs: list = federation_server_configs or []
 
     # ------------------------------------------------------------------
     # run_task
@@ -124,11 +131,28 @@ class WorkflowExecutor:
                 session_id, EventType.provider_request_start, 0, {}
             )
 
-            result = await self._adapter.run(
-                system_prompt=profile.system_prompt,
-                task=req.task,
-                max_turns=max_turns,
-            )
+            # Resolve federation tools for this profile
+            invoker = self._build_invoker(req.system_profile, session_id)
+            visible_tools = self._visible_tool_dicts(req.system_profile)
+
+            if visible_tools and invoker is not None:
+                await self._sessions.append_event(
+                    session_id, EventType.downstream_tool_catalog_resolved, 0,
+                    {"visible_tools": [t["name"] for t in visible_tools]},
+                )
+                result = await self._adapter.run_with_tools(
+                    system_prompt=profile.system_prompt,
+                    task=req.task,
+                    max_turns=max_turns,
+                    tools=visible_tools,
+                    tool_executor=self._make_tool_executor(invoker, session_id, 0),
+                )
+            else:
+                result = await self._adapter.run(
+                    system_prompt=profile.system_prompt,
+                    task=req.task,
+                    max_turns=max_turns,
+                )
 
             warnings.extend(result.warnings)
             summary = self._make_summary(result.output_text)
@@ -246,12 +270,30 @@ class WorkflowExecutor:
                 req.session_id, EventType.provider_request_start, session.turn_count, {}
             )
 
-            result = await self._adapter.continue_run(
-                system_prompt=profile.system_prompt,
-                message=req.message,
-                conversation_history=history,
-                max_turns=max_turns,
-            )
+            # Resolve federation tools for this profile
+            invoker = self._build_invoker(session.profile, req.session_id)
+            visible_tools = self._visible_tool_dicts(session.profile)
+
+            if visible_tools and invoker is not None:
+                await self._sessions.append_event(
+                    req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
+                    {"visible_tools": [t["name"] for t in visible_tools]},
+                )
+                result = await self._adapter.run_with_tools(
+                    system_prompt=profile.system_prompt,
+                    task=req.message,
+                    max_turns=max_turns,
+                    tools=visible_tools,
+                    tool_executor=self._make_tool_executor(invoker, req.session_id, session.turn_count),
+                    conversation_history=history,
+                )
+            else:
+                result = await self._adapter.continue_run(
+                    system_prompt=profile.system_prompt,
+                    message=req.message,
+                    conversation_history=history,
+                    max_turns=max_turns,
+                )
 
             warnings.extend(result.warnings)
             new_turn_count = session.turn_count + result.turn_count
@@ -634,6 +676,49 @@ class WorkflowExecutor:
         except Exception as exc:
             logger.warning("Failed to save verification report: %s", exc)
             return []
+
+    # ------------------------------------------------------------------
+    # Federation helpers
+    # ------------------------------------------------------------------
+
+    def _build_invoker(
+        self,
+        profile: ProfileName,
+        session_id: str,
+    ) -> DownstreamToolInvoker | None:
+        """Build a DownstreamToolInvoker for the given profile, or None if federation inactive."""
+        if self._visibility_resolver is None:
+            return None
+        return build_invoker(
+            profile=profile,
+            visibility_resolver=self._visibility_resolver,
+            server_configs=self._federation_server_configs,
+            session_store=self._sessions,
+        )
+
+    def _visible_tool_dicts(self, profile: ProfileName) -> list[dict]:
+        """Return Anthropic tool definition dicts for tools visible to this profile."""
+        if self._visibility_resolver is None:
+            return []
+        visible = self._visibility_resolver.resolve(profile)
+        return [t.to_anthropic_tool_dict() for t in visible]
+
+    def _make_tool_executor(
+        self,
+        invoker: DownstreamToolInvoker,
+        session_id: str,
+        turn_index: int,
+    ):
+        """Return an async callable suitable for passing to run_with_tools."""
+        async def _executor(tool_name: str, tool_input: dict) -> str:
+            result = await invoker.invoke(
+                normalized_name=tool_name,
+                tool_input=tool_input,
+                session_id=session_id,
+                turn_index=turn_index,
+            )
+            return result.to_content_string()
+        return _executor
 
     def _error_response(
         self,

@@ -16,6 +16,10 @@ Environment variable reference:
   CLAUDE_AGENT_MCP_LOCK_TTL       — Session lock TTL in seconds (default: 300)
   CLAUDE_AGENT_MCP_ALLOWED_DIRS   — Comma-separated allowed working directories
 
+Federation variables (v0.3):
+  CLAUDE_AGENT_MCP_FEDERATION_ENABLED   — Enable downstream federation (default: false)
+  CLAUDE_AGENT_MCP_FEDERATION_CONFIG    — Path to JSON federation config file
+
 Legacy variable names (still supported, lower priority than MCP-prefixed names):
   CLAUDE_AGENT_STATE_DIR, CLAUDE_AGENT_MODEL, CLAUDE_AGENT_LOCK_TTL_SECONDS,
   CLAUDE_AGENT_ALLOWED_DIRS, CLAUDE_AGENT_MAX_ARTIFACT_BYTES, CLAUDE_AGENT_LOG_LEVEL
@@ -108,6 +112,17 @@ class Config:
         self.log_level: str = _env(
             "CLAUDE_AGENT_MCP_LOG_LEVEL", "CLAUDE_AGENT_LOG_LEVEL", default="INFO"
         ).upper()
+
+        # --- Federation (v0.3) ---
+        federation_enabled_raw = _env(
+            "CLAUDE_AGENT_MCP_FEDERATION_ENABLED", default="false"
+        ).strip().lower()
+        self.federation_enabled: bool = federation_enabled_raw in {"true", "1", "yes"}
+
+        federation_config_raw = _env("CLAUDE_AGENT_MCP_FEDERATION_CONFIG", default="")
+        self.federation_config_path: Path | None = (
+            Path(federation_config_raw).resolve() if federation_config_raw else None
+        )
 
     def validate(self) -> None:
         """Fail early and clearly on invalid startup configuration."""

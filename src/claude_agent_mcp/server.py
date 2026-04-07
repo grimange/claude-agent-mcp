@@ -28,6 +28,7 @@ from mcp.types import (
 )
 
 from claude_agent_mcp.config import get_config
+from claude_agent_mcp.federation import FederationManager
 from claude_agent_mcp.logging import configure_logging, get_logger
 from claude_agent_mcp.runtime.agent_adapter import ClaudeAdapter
 from claude_agent_mcp.runtime.artifact_store import ArtifactStore
@@ -43,7 +44,7 @@ from claude_agent_mcp.tools.verify_task import handle_verify_task
 
 logger = get_logger(__name__)
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # ---------------------------------------------------------------------------
 # Tool schemas (JSON Schema for each v0.1 tool)
@@ -252,6 +253,14 @@ async def _setup_runtime(config):
     profile_registry = ProfileRegistry()
     agent_adapter = ClaudeAdapter(config)
 
+    # Initialize federation (v0.3) — disabled by default, no-op if not configured
+    federation = await FederationManager.build(config)
+    if federation.is_active():
+        logger.info(
+            "Federation active: %d allowlisted tool(s) available",
+            len(federation.catalog.allowed_tools()),
+        )
+
     executor = WorkflowExecutor(
         config=config,
         session_store=session_store,
@@ -259,6 +268,8 @@ async def _setup_runtime(config):
         policy_engine=policy_engine,
         profile_registry=profile_registry,
         agent_adapter=agent_adapter,
+        visibility_resolver=federation.visibility_resolver if federation.is_active() else None,
+        federation_server_configs=federation.server_configs,
     )
 
     return session_store, artifact_store, executor

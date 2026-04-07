@@ -46,6 +46,10 @@ class EventType(str, Enum):
     artifact_emission = "artifact_emission"
     workflow_normalization = "workflow_normalization"
     error_event = "error_event"
+    # Federation events (v0.3)
+    downstream_tool_catalog_resolved = "downstream_tool_catalog_resolved"
+    downstream_tool_invocation = "downstream_tool_invocation"
+    downstream_tool_result = "downstream_tool_result"
 
 
 class ToolClass(str, Enum):

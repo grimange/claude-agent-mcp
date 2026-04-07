@@ -7,6 +7,79 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] — 2026-04-07
+
+### Federation track release
+
+This release adds governed downstream MCP federation.
+No new public workflow tools, profiles, or session semantics were added.
+All v0.2 MCP tool contracts and response envelopes are unchanged.
+
+### Added
+
+- **Downstream MCP federation** — operators can statically configure downstream
+  MCP servers that expose a controlled subset of tools to Claude-backed sessions.
+  Federation is **disabled by default** (`CLAUDE_AGENT_MCP_FEDERATION_ENABLED=false`).
+- **`federation/` package** — new internal module:
+  - `registry.py` — `DownstreamRegistry` loads and validates downstream server
+    configs from a JSON file; fails early on invalid config.
+  - `connections.py` — `DownstreamConnectionManager` connects to enabled downstream
+    servers at startup and discovers their tools.
+  - `catalog.py` — `ToolCatalog` normalises discovered tools into collision-safe
+    names (`{server_name}__{tool_name}`) and applies allowlist filtering.
+  - `visibility.py` — `ToolVisibilityResolver` gates tool exposure by active profile.
+  - `invoker.py` — `DownstreamToolInvoker` validates tool selection, executes via
+    the connection layer, normalises results, and records session audit events.
+  - `models.py` — `DownstreamServerConfig`, `DiscoveredTool`, `DownstreamToolCallResult`.
+  - `__init__.py` — `FederationManager` startup coordinator.
+- **New config fields** — `CLAUDE_AGENT_MCP_FEDERATION_ENABLED` and
+  `CLAUDE_AGENT_MCP_FEDERATION_CONFIG` (path to JSON federation config file).
+- **Tool-use loop** — `ClaudeAdapter.run_with_tools()` implements the Anthropic
+  Messages API tool-use loop for federation-enabled sessions.
+- **Federation session events** — three new `EventType` values:
+  `downstream_tool_catalog_resolved`, `downstream_tool_invocation`,
+  `downstream_tool_result`. Invocation events record input keys only (not values).
+- **Federation error taxonomy** — six new error classes: `DownstreamServerConfigError`,
+  `DownstreamDiscoveryError`, `DownstreamToolNotAllowedError`,
+  `DownstreamToolNotVisibleError`, `DownstreamInvocationError`,
+  `DownstreamSchemaValidationError`.
+- **Docs** — `docs/federation.md` (operator guide), `docs/downstream-tool-policy.md`
+  (four-gate policy model reference).
+- **Tests** — `tests/test_federation_registry.py` (22 tests),
+  `tests/test_federation_visibility.py` (17 tests),
+  `tests/test_federation_invocation.py` (12 tests).
+  Total test count: 132 (up from 81).
+
+### Changed
+
+- `server.py` — `_setup_runtime()` initialises `FederationManager` at startup;
+  version bumped to `0.3.0`.
+- `workflow_executor.py` — accepts optional `visibility_resolver` and
+  `federation_server_configs`; `run_task` and `continue_session` use
+  `run_with_tools` when federation tools are visible for the active profile.
+- `agent_adapter.py` — added `run_with_tools()` method.
+- `pyproject.toml` — version bumped to `0.3.0`.
+
+### Federation invariants enforced
+
+- A tool must pass four gates to be callable: server enabled → discovered →
+  allowlisted → profile permitted. All gates are enforced in code.
+- No wildcard or passthrough allowlist mode exists.
+- The `verification` profile has no downstream tool access by default.
+- Discovery failures for individual servers are logged and skipped; startup is
+  not aborted.
+- All downstream invocations flow through the bounded invoker layer.
+
+### Security notes
+
+- Federation expands the trust boundary. It is intended for trusted
+  operator-controlled environments only.
+- The `streamable-http` transport remains unauthenticated. Federation does not
+  change this — do not expose on a public interface without additional controls.
+- Downstream servers run as subprocesses and inherit the process environment.
+
+---
+
 ## [0.2.0] — 2026-04-07
 
 ### Deployment track release

@@ -88,3 +88,50 @@ class ConfigurationError(AgentMCPError):
 
     code = "configuration_error"
     message = "Configuration error"
+
+
+# ---------------------------------------------------------------------------
+# Federation errors (v0.3)
+# ---------------------------------------------------------------------------
+
+
+class DownstreamServerConfigError(AgentMCPError):
+    """Downstream server configuration is invalid or missing."""
+
+    code = "downstream_server_config_error"
+    message = "Downstream server configuration error"
+
+
+class DownstreamDiscoveryError(AgentMCPError):
+    """Failed to discover tools from a downstream MCP server."""
+
+    code = "downstream_discovery_error"
+    message = "Downstream tool discovery failed"
+
+
+class DownstreamToolNotAllowedError(AgentMCPError):
+    """Requested downstream tool is not in the allowlist."""
+
+    code = "downstream_tool_not_allowed"
+    message = "Downstream tool is not allowlisted"
+
+
+class DownstreamToolNotVisibleError(AgentMCPError):
+    """Requested downstream tool is not visible for the active profile."""
+
+    code = "downstream_tool_not_visible"
+    message = "Downstream tool is not visible for this profile"
+
+
+class DownstreamInvocationError(AgentMCPError):
+    """Downstream tool invocation failed."""
+
+    code = "downstream_invocation_error"
+    message = "Downstream tool invocation failed"
+
+
+class DownstreamSchemaValidationError(AgentMCPError):
+    """Tool arguments failed downstream schema validation."""
+
+    code = "downstream_schema_validation_error"
+    message = "Downstream tool arguments failed schema validation"
