@@ -135,7 +135,29 @@ class WorkflowExecutor:
             invoker = self._build_invoker(req.system_profile, session_id)
             visible_tools = self._visible_tool_dicts(req.system_profile)
 
-            if visible_tools and invoker is not None:
+            # Capability check: warn if tools are resolved but backend doesn't support them.
+            caps = self._backend.capabilities
+            if visible_tools and not caps.supports_downstream_tools:
+                cap_warning = (
+                    f"Backend '{self._backend.name}' does not support downstream federation "
+                    "tools. Visible tools will not be forwarded. Switch to the 'api' backend "
+                    "to use federation tools."
+                )
+                warnings.append(cap_warning)
+                await self._sessions.append_event(
+                    session_id, EventType.downstream_tool_catalog_resolved, 0,
+                    {
+                        "visible_tools": [t["name"] for t in visible_tools],
+                        "forwarded": False,
+                        "reason": f"backend '{self._backend.name}' does not support downstream tools",
+                    },
+                )
+                result = await self._backend.execute(
+                    system_prompt=profile.system_prompt,
+                    task=req.task,
+                    max_turns=max_turns,
+                )
+            elif visible_tools and invoker is not None:
                 await self._sessions.append_event(
                     session_id, EventType.downstream_tool_catalog_resolved, 0,
                     {"visible_tools": [t["name"] for t in visible_tools]},
@@ -274,7 +296,31 @@ class WorkflowExecutor:
             invoker = self._build_invoker(session.profile, req.session_id)
             visible_tools = self._visible_tool_dicts(session.profile)
 
-            if visible_tools and invoker is not None:
+            # Capability check: warn if tools are resolved but backend doesn't support them.
+            caps = self._backend.capabilities
+            if visible_tools and not caps.supports_downstream_tools:
+                cap_warning = (
+                    f"Backend '{self._backend.name}' does not support downstream federation "
+                    "tools. Visible tools will not be forwarded. Switch to the 'api' backend "
+                    "to use federation tools."
+                )
+                warnings.append(cap_warning)
+                await self._sessions.append_event(
+                    req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
+                    {
+                        "visible_tools": [t["name"] for t in visible_tools],
+                        "forwarded": False,
+                        "reason": f"backend '{self._backend.name}' does not support downstream tools",
+                    },
+                )
+                result = await self._backend.execute(
+                    system_prompt=profile.system_prompt,
+                    task=req.message,
+                    max_turns=max_turns,
+                    conversation_history=history,
+                    session_summary=session.summary_latest,
+                )
+            elif visible_tools and invoker is not None:
                 await self._sessions.append_event(
                     req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
                     {"visible_tools": [t["name"] for t in visible_tools]},
@@ -286,6 +332,7 @@ class WorkflowExecutor:
                     tools=visible_tools,
                     tool_executor=self._make_tool_executor(invoker, req.session_id, session.turn_count),
                     conversation_history=history,
+                    session_summary=session.summary_latest,
                 )
             else:
                 result = await self._backend.execute(
@@ -293,6 +340,7 @@ class WorkflowExecutor:
                     task=req.message,
                     max_turns=max_turns,
                     conversation_history=history,
+                    session_summary=session.summary_latest,
                 )
 
             warnings.extend(result.warnings)

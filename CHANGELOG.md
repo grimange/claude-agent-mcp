@@ -7,6 +7,100 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.0] — 2026-04-07
+
+### Claude Code stabilization track release
+
+This release hardens the `claude_code` execution backend introduced in v0.4.
+No new public MCP tools, profiles, or session semantics were added.
+All v0.4 MCP tool contracts and response envelopes are unchanged.
+The `api` backend is unaffected and does not regress.
+
+### Added
+
+- **`BackendCapabilities` dataclass** (`backends/base.py`) — frozen dataclass
+  declaring six capability flags per backend: `supports_downstream_tools`,
+  `supports_structured_tool_use`, `supports_native_multiturn`,
+  `supports_rich_stop_reason`, `supports_structured_messages`,
+  `supports_workspace_assumptions`. Used internally by the workflow executor
+  to emit warnings and suppress unsupported forwarding paths.
+- **`capabilities` property on `ExecutionBackend`** — abstract property added
+  to the base interface; both backends implement it explicitly.
+- **`session_summary` parameter on `execute()`** — optional kwarg added to the
+  `ExecutionBackend.execute()` signature. The `claude_code` backend embeds the
+  summary in the structured prompt; the `api` backend ignores it.
+- **Structured prompt builder** (`claude_code_backend.py`) — replaces the
+  previous flat plain-text history serialization. Produces a five-section
+  structured prompt: `[System]`, `[Session Context]`, `[Conversation History]`,
+  `[Current Request]`, `[Instructions]`. Section boundaries are visually distinct.
+- **Deterministic history truncation** — the `claude_code` backend keeps the
+  most recent **10 user/assistant exchange pairs** (configurable via
+  `HISTORY_MAX_EXCHANGES`). Individual message content is capped at **2000
+  characters** (`CONTENT_MAX_CHARS`). Truncated content is marked `[truncated]`.
+- **`backend_defaulted` stop reason** — the `claude_code` backend now honestly
+  reports `stop_reason: backend_defaulted` instead of the misleading `end_turn`.
+- **Capability-aware workflow executor** — `WorkflowExecutor` checks
+  `backend.capabilities.supports_downstream_tools` before building the tool
+  invoker. If tools are resolved but the backend cannot forward them, a warning
+  is emitted to the response envelope and a session event is recorded — no
+  silent discard.
+- **Session summary passed to backend** — `continue_session` now passes
+  `session.summary_latest` as `session_summary` to `backend.execute()`, enabling
+  the `claude_code` backend to include it in the `[Session Context]` section.
+- **Docs** — `docs/backend-capability-matrix.md` (new) with full capability
+  flag definitions and per-flag operator guidance. `docs/claude-code-backend.md`
+  and `docs/execution-backends.md` updated to v0.5 with truncation policy,
+  warning reference, and expanded troubleshooting.
+- **Tests** — 20 new tests in `tests/test_backends.py` across four new test
+  classes: `TestBackendCapabilities`, `TestClaudeCodePromptBuilder`,
+  `TestClaudeCodeNormalizationV5`, `TestApiBackendV5Compatibility`.
+  Total test count: 187 (up from 167).
+
+### Changed
+
+- `backends/claude_code_backend.py` — `_build_prompt()` preserved as a
+  backwards-compatible alias for `_build_structured_prompt()`. Internal
+  prompt construction fully replaced with the structured builder.
+- `backends/api_backend.py` — `execute()` accepts the new `session_summary`
+  kwarg (ignored). `capabilities` property added declaring full API support.
+- `backends/base.py` — `BackendCapabilities` dataclass added;
+  `ExecutionBackend.execute()` signature extended with `session_summary`;
+  `capabilities` abstract property added.
+- `runtime/workflow_executor.py` — `run_task` and `continue_session` updated
+  to check backend capabilities before tool forwarding and to pass
+  `session_summary` to `execute()`.
+- `tests/test_backends.py` — existing `test_execute_returns_normalized_result`
+  updated to assert `stop_reason == "backend_defaulted"` (was `"end_turn"`).
+
+### Warnings now surfaced by `claude_code` backend
+
+| Condition | Appears in `warnings` field |
+|---|---|
+| Downstream tools resolved but not forwarded | Yes — advises `api` backend |
+| History truncated beyond exchange limit | Yes — states count kept |
+| Stop-reason precision limited | Yes — always present |
+| Empty CLI response | Yes |
+
+### Backend capability declarations (v0.5)
+
+| Capability | `api` | `claude_code` |
+|---|---|---|
+| `supports_downstream_tools` | Yes | No |
+| `supports_structured_tool_use` | Yes | No |
+| `supports_native_multiturn` | Yes | No |
+| `supports_rich_stop_reason` | Yes | No |
+| `supports_structured_messages` | Yes | No |
+| `supports_workspace_assumptions` | No | Yes |
+
+### Known limitations (claude_code backend, v0.5)
+
+- Single-turn per CLI invocation; no native multi-turn tool-use loop.
+- Downstream federation tools are not forwarded (warning emitted).
+- History is reconstructed as structured labeled text, not Messages API objects.
+- `stop_reason` is always `backend_defaulted`.
+
+---
+
 ## [0.4.0] — 2026-04-07
 
 ### Execution backend track release

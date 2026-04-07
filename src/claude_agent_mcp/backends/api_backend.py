@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from claude_agent_mcp.backends.base import ExecutionBackend, ToolExecutor
+from claude_agent_mcp.backends.base import BackendCapabilities, ExecutionBackend, ToolExecutor
 from claude_agent_mcp.errors import ExecutionBackendAuthError, ExecutionBackendConfigError
 from claude_agent_mcp.runtime.agent_adapter import ClaudeAdapter
 
@@ -37,6 +37,17 @@ class ApiExecutionBackend(ExecutionBackend):
     def name(self) -> str:
         return "api"
 
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        return BackendCapabilities(
+            supports_downstream_tools=True,
+            supports_structured_tool_use=True,
+            supports_native_multiturn=True,
+            supports_rich_stop_reason=True,
+            supports_structured_messages=True,
+            supports_workspace_assumptions=False,
+        )
+
     def validate_startup(self, config: "Config") -> None:
         """Fail clearly if ANTHROPIC_API_KEY is absent."""
         if not config.anthropic_api_key:
@@ -58,6 +69,7 @@ class ApiExecutionBackend(ExecutionBackend):
         tools: list[dict[str, Any]] | None = None,
         tool_executor: ToolExecutor | None = None,
         conversation_history: list[dict[str, Any]] | None = None,
+        session_summary: str | None = None,
     ) -> "NormalizedProviderResult":
         """Execute via Anthropic Messages API.
 

@@ -1,4 +1,4 @@
-# Execution Backends (v0.4)
+# Execution Backends (v0.5)
 
 ## Overview
 
@@ -9,7 +9,7 @@
 | Backend name  | Auth model           | Description |
 |---------------|----------------------|-------------|
 | `api`         | `ANTHROPIC_API_KEY`  | Anthropic Messages API (default) |
-| `claude_code` | Claude Code login    | Claude Code CLI (`claude -p`) |
+| `claude_code` | Claude Code login    | Claude Code CLI (`claude --print`) |
 
 ## Selecting a backend
 
@@ -21,6 +21,8 @@ CLAUDE_AGENT_MCP_EXECUTION_BACKEND=claude_code
 ```
 
 Backend selection is explicit and validated at startup. Unknown backend names cause an immediate startup failure with a clear error message. There is no silent fallback between backends.
+
+---
 
 ## API backend (default)
 
@@ -44,6 +46,7 @@ Requires `ANTHROPIC_API_KEY` to be set. This backend will fail at startup if the
 - Server-style deployments with API credentials
 - CI/CD automation environments
 - Any environment where `ANTHROPIC_API_KEY` is available
+- Workflows that require downstream federation tool-use
 
 ---
 
@@ -58,6 +61,7 @@ See [claude-code-backend.md](claude-code-backend.md) for full setup and usage de
 - Operators who have Claude Code installed and authenticated via `claude login`
 - Environments where Claude subscriptions are available but API keys are not desired
 - Local development workflows that already use Claude Code
+- Workflows that do not require downstream federation tool-use
 
 ---
 
@@ -70,20 +74,31 @@ Regardless of which backend is selected, the following guarantees hold:
 3. **Policy enforcement is unchanged.** Profile-based policy is evaluated before any backend execution.
 4. **Federation allowlists are unchanged.** Visible tools are resolved before the backend is invoked.
 5. **Session transcripts are unchanged.** All session events are persisted in the internal SQLite store.
+6. **Warnings surface backend limitations.** Any backend limitation that affects execution produces an entry in the `warnings` field of the response.
+
+---
 
 ## Backend metadata in sessions
 
 Sessions record the backend name in the `provider` column of the sessions table. This is for observability only and does not affect session behavior.
 
-## Behavioral differences
+---
 
-| Behavior | api | claude_code |
+## Behavioral differences (v0.5)
+
+| Behavior | `api` | `claude_code` |
 |---|---|---|
 | Auth mechanism | API key | Claude Code login |
-| Federation tool-use loop | Supported | Not supported (v0.4) |
+| Federation tool-use loop | Supported | Not supported — warning emitted |
 | Multi-turn native support | Via Messages API | CLI single-shot |
-| Conversation history | Native messages array | Serialized as plain text in prompt |
-| Stop reason | API-native | Always `end_turn` |
+| Conversation history | Native messages array | Structured labeled text (bounded) |
+| History truncation | Not applicable | Most recent 10 exchanges kept |
+| Stop reason | API-native | `backend_defaulted` — warning emitted |
+| Workspace access | No | Yes (CLI environment) |
+
+For the full capability flag comparison, see [backend-capability-matrix.md](backend-capability-matrix.md).
+
+---
 
 ## Error reference
 

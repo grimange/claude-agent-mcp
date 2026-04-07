@@ -329,7 +329,8 @@ class TestClaudeCodeExecutionBackend:
         assert isinstance(result, NormalizedProviderResult)
         assert result.output_text == "Task done successfully"
         assert result.turn_count == 1
-        assert result.stop_reason == "end_turn"
+        # v0.5: CLI does not provide rich stop reasons; backend reports backend_defaulted
+        assert result.stop_reason == "backend_defaulted"
 
     @pytest.mark.asyncio
     async def test_execute_warns_on_tools(self):
@@ -430,3 +431,315 @@ def test_build_backend_returns_execution_backend_instance():
     cfg = _make_config(execution_backend="api", anthropic_api_key="sk-test")
     backend = build_backend(cfg)
     assert isinstance(backend, ExecutionBackend)
+
+
+# ---------------------------------------------------------------------------
+# v0.5 — BackendCapabilities model
+# ---------------------------------------------------------------------------
+
+
+class TestBackendCapabilities:
+    def test_api_backend_capabilities_flags(self):
+        cfg = _make_config(anthropic_api_key="sk-test")
+        backend = ApiExecutionBackend(cfg)
+        caps = backend.capabilities
+        assert caps.supports_downstream_tools is True
+        assert caps.supports_structured_tool_use is True
+        assert caps.supports_native_multiturn is True
+        assert caps.supports_rich_stop_reason is True
+        assert caps.supports_structured_messages is True
+        assert caps.supports_workspace_assumptions is False
+
+    def test_claude_code_backend_capabilities_flags(self):
+        cfg = _make_config()
+        backend = ClaudeCodeExecutionBackend(cfg)
+        caps = backend.capabilities
+        assert caps.supports_downstream_tools is False
+        assert caps.supports_structured_tool_use is False
+        assert caps.supports_native_multiturn is False
+        assert caps.supports_rich_stop_reason is False
+        assert caps.supports_structured_messages is False
+        assert caps.supports_workspace_assumptions is True
+
+    def test_capabilities_are_frozen(self):
+        """BackendCapabilities must be immutable (frozen dataclass)."""
+        cfg = _make_config()
+        caps = ClaudeCodeExecutionBackend(cfg).capabilities
+        with pytest.raises(Exception):
+            caps.supports_downstream_tools = True  # type: ignore[misc]
+
+    def test_capabilities_differ_between_backends(self):
+        cfg = _make_config(anthropic_api_key="sk-test")
+        api_caps = ApiExecutionBackend(cfg).capabilities
+        cc_caps = ClaudeCodeExecutionBackend(cfg).capabilities
+        assert api_caps != cc_caps
+
+
+# ---------------------------------------------------------------------------
+# v0.5 — Structured prompt reconstruction
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCodePromptBuilder:
+    def setup_method(self):
+        self.backend = ClaudeCodeExecutionBackend(_make_config())
+
+    def test_prompt_includes_all_sections(self):
+        prompt, _ = self.backend._build_structured_prompt(
+            system_prompt="system instructions",
+            task="do the thing",
+            conversation_history=None,
+            session_summary="prior summary",
+        )
+        assert "[System]" in prompt
+        assert "system instructions" in prompt
+        assert "[Session Context]" in prompt
+        assert "prior summary" in prompt
+        assert "[Current Request]" in prompt
+        assert "do the thing" in prompt
+        assert "[Instructions]" in prompt
+
+    def test_prompt_omits_session_context_when_no_summary(self):
+        prompt, _ = self.backend._build_structured_prompt(
+            system_prompt="sys",
+            task="task",
+            conversation_history=None,
+            session_summary=None,
+        )
+        assert "[Session Context]" not in prompt
+
+    def test_prompt_includes_conversation_history_with_role_labels(self):
+        history = [
+            {"role": "user", "content": "first message"},
+            {"role": "assistant", "content": "first response"},
+        ]
+        prompt, _ = self.backend._build_structured_prompt(
+            system_prompt="sys",
+            task="second message",
+            conversation_history=history,
+            session_summary=None,
+        )
+        assert "[Conversation History]" in prompt
+        assert "[User]" in prompt
+        assert "[Assistant]" in prompt
+        assert "first message" in prompt
+        assert "first response" in prompt
+        assert "second message" in prompt
+
+    def test_prompt_structure_is_deterministic(self):
+        """Same inputs always produce the same prompt."""
+        history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+        p1, _ = self.backend._build_structured_prompt("sys", "task", history, "summary")
+        p2, _ = self.backend._build_structured_prompt("sys", "task", history, "summary")
+        assert p1 == p2
+
+    def test_history_not_truncated_within_limit(self):
+        """History at or below limit is not truncated."""
+        from claude_agent_mcp.backends.claude_code_backend import HISTORY_MAX_EXCHANGES
+        history = []
+        for i in range(HISTORY_MAX_EXCHANGES):
+            history.append({"role": "user", "content": f"q{i}"})
+            history.append({"role": "assistant", "content": f"a{i}"})
+        _, truncated = self.backend._build_structured_prompt(
+            "sys", "task", history, None
+        )
+        assert not truncated
+
+    def test_history_truncated_beyond_limit(self):
+        """History exceeding the limit is truncated and was_truncated=True."""
+        from claude_agent_mcp.backends.claude_code_backend import HISTORY_MAX_EXCHANGES
+        history = []
+        for i in range(HISTORY_MAX_EXCHANGES + 5):
+            history.append({"role": "user", "content": f"q{i}"})
+            history.append({"role": "assistant", "content": f"a{i}"})
+        _, truncated = self.backend._build_structured_prompt(
+            "sys", "task", history, None
+        )
+        assert truncated
+
+    def test_truncated_history_keeps_most_recent(self):
+        """After truncation, the most recent messages are preserved."""
+        from claude_agent_mcp.backends.claude_code_backend import HISTORY_MAX_EXCHANGES
+        history = []
+        for i in range(HISTORY_MAX_EXCHANGES + 3):
+            history.append({"role": "user", "content": f"q{i}"})
+            history.append({"role": "assistant", "content": f"a{i}"})
+        prompt, _ = self.backend._build_structured_prompt("sys", "task", history, None)
+        last_idx = HISTORY_MAX_EXCHANGES + 2
+        assert f"q{last_idx}" in prompt
+        assert f"a{last_idx}" in prompt
+
+    def test_long_content_is_capped(self):
+        """Individual message content exceeding CONTENT_MAX_CHARS is truncated."""
+        from claude_agent_mcp.backends.claude_code_backend import CONTENT_MAX_CHARS
+        long_content = "x" * (CONTENT_MAX_CHARS + 100)
+        history = [{"role": "user", "content": long_content}]
+        prompt, _ = self.backend._build_structured_prompt("sys", "task", history, None)
+        assert "[truncated]" in prompt
+
+    def test_build_prompt_legacy_alias_still_works(self):
+        """_build_prompt legacy alias is preserved for backwards compatibility."""
+        prompt = self.backend._build_prompt("sys", "task", None)
+        assert "task" in prompt
+        assert "sys" in prompt
+
+
+# ---------------------------------------------------------------------------
+# v0.5 — Normalization and warnings
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCodeNormalizationV5:
+    @pytest.mark.asyncio
+    async def test_stop_reason_is_backend_defaulted(self):
+        """stop_reason must be 'backend_defaulted' (not 'end_turn') in v0.5."""
+        cfg = _make_config()
+        backend = ClaudeCodeExecutionBackend(cfg)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+
+        with patch.object(backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await backend.execute(
+                system_prompt="sys", task="task", max_turns=5
+            )
+
+        assert result.stop_reason == "backend_defaulted"
+
+    @pytest.mark.asyncio
+    async def test_stop_reason_warning_is_present(self):
+        """A warning about stop_reason precision must always be present."""
+        cfg = _make_config()
+        backend = ClaudeCodeExecutionBackend(cfg)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+
+        with patch.object(backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await backend.execute(
+                system_prompt="sys", task="task", max_turns=5
+            )
+
+        assert any("stop_reason" in w for w in result.warnings)
+
+    @pytest.mark.asyncio
+    async def test_unsupported_tools_warning_references_api_backend(self):
+        """Tools warning must tell operators to switch to 'api' backend."""
+        cfg = _make_config()
+        backend = ClaudeCodeExecutionBackend(cfg)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"output", b""))
+
+        async def _tool_exec(name, inp):
+            return "result"
+
+        with patch.object(backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await backend.execute(
+                system_prompt="sys",
+                task="task",
+                max_turns=5,
+                tools=[{"name": "t"}],
+                tool_executor=_tool_exec,
+            )
+
+        assert any("api" in w.lower() for w in result.warnings)
+
+    @pytest.mark.asyncio
+    async def test_empty_response_produces_warning(self):
+        cfg = _make_config()
+        backend = ClaudeCodeExecutionBackend(cfg)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        with patch.object(backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await backend.execute(
+                system_prompt="sys", task="task", max_turns=5
+            )
+
+        assert result.output_text == ""
+        assert any("empty" in w.lower() for w in result.warnings)
+
+    @pytest.mark.asyncio
+    async def test_session_summary_is_passed_to_prompt(self):
+        """session_summary is embedded in the CLI prompt."""
+        cfg = _make_config()
+        backend = ClaudeCodeExecutionBackend(cfg)
+        captured_cmd: list = []
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+
+        async def fake_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            return mock_proc
+
+        with patch.object(backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await backend.execute(
+                system_prompt="sys",
+                task="task",
+                max_turns=5,
+                session_summary="prior work summary",
+            )
+
+        full_cmd = " ".join(str(a) for a in captured_cmd)
+        assert "prior work summary" in full_cmd
+
+    @pytest.mark.asyncio
+    async def test_truncation_warning_emitted_when_history_long(self):
+        """Truncated history produces a warning in the result."""
+        from claude_agent_mcp.backends.claude_code_backend import HISTORY_MAX_EXCHANGES
+        cfg = _make_config()
+        backend = ClaudeCodeExecutionBackend(cfg)
+        history = []
+        for i in range(HISTORY_MAX_EXCHANGES + 3):
+            history.append({"role": "user", "content": f"q{i}"})
+            history.append({"role": "assistant", "content": f"a{i}"})
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+
+        with patch.object(backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await backend.execute(
+                system_prompt="sys",
+                task="task",
+                max_turns=5,
+                conversation_history=history,
+            )
+
+        assert any("truncat" in w.lower() for w in result.warnings)
+
+
+# ---------------------------------------------------------------------------
+# v0.5 — API backend: session_summary parameter accepted without error
+# ---------------------------------------------------------------------------
+
+
+class TestApiBackendV5Compatibility:
+    @pytest.mark.asyncio
+    async def test_execute_accepts_session_summary_kwarg(self):
+        """API backend execute() must accept session_summary without error."""
+        cfg = _make_config()
+        backend = ApiExecutionBackend(cfg)
+        expected = NormalizedProviderResult(
+            output_text="Done", turn_count=1, stop_reason="end_turn"
+        )
+        backend._adapter.run = AsyncMock(return_value=expected)
+
+        result = await backend.execute(
+            system_prompt="sys",
+            task="task",
+            max_turns=5,
+            session_summary="some prior context",
+        )
+
+        assert result is expected
