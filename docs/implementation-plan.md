@@ -26,7 +26,7 @@ v0.1 exists to provide five core capabilities:
    Sessions survive process restarts and can be resumed explicitly.
 
 2. **Claude-backed task execution**  
-   The runtime can execute bounded agent tasks through the Claude Agent SDK.
+   The runtime can execute bounded agent tasks through the Anthropic Messages API.
 
 3. **Stable MCP tool contracts**  
    MCP clients interact through predictable request and response schemas.
