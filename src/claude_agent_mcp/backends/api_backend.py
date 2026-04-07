@@ -70,10 +70,15 @@ class ApiExecutionBackend(ExecutionBackend):
         tool_executor: ToolExecutor | None = None,
         conversation_history: list[dict[str, Any]] | None = None,
         session_summary: str | None = None,
+        is_continuation: bool = False,
     ) -> "NormalizedProviderResult":
         """Execute via Anthropic Messages API.
 
         Routes to run_with_tools if tools are provided, otherwise run().
+
+        Note: is_continuation is accepted for interface compatibility (v0.6) but is
+        ignored — the API backend handles multi-turn conversation natively via the
+        conversation_history parameter.
         """
         if tools and tool_executor:
             return await self._adapter.run_with_tools(

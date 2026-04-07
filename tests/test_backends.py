@@ -743,3 +743,124 @@ class TestApiBackendV5Compatibility:
         )
 
         assert result is expected
+
+
+# ---------------------------------------------------------------------------
+# v0.6 — Cross-backend contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestCrossBackendContractV6:
+    """Verify that both backends satisfy the shared v0.6 contract."""
+
+    def test_both_backends_have_capabilities_property(self):
+        cfg_api = _make_config(anthropic_api_key="sk-test")
+        cfg_cc = _make_config()
+        api_caps = ApiExecutionBackend(cfg_api).capabilities
+        cc_caps = ClaudeCodeExecutionBackend(cfg_cc).capabilities
+        # Both must return a BackendCapabilities object
+        from claude_agent_mcp.backends.base import BackendCapabilities
+        assert isinstance(api_caps, BackendCapabilities)
+        assert isinstance(cc_caps, BackendCapabilities)
+
+    def test_api_backend_capabilities_is_frozen(self):
+        cfg = _make_config(anthropic_api_key="sk-test")
+        caps = ApiExecutionBackend(cfg).capabilities
+        with pytest.raises(Exception):
+            caps.supports_downstream_tools = False  # type: ignore[misc]
+
+    def test_claude_code_backend_capabilities_is_frozen(self):
+        cfg = _make_config()
+        caps = ClaudeCodeExecutionBackend(cfg).capabilities
+        with pytest.raises(Exception):
+            caps.supports_downstream_tools = True  # type: ignore[misc]
+
+    def test_claude_code_backend_has_limited_downstream_tools_flag(self):
+        cfg = _make_config()
+        caps = ClaudeCodeExecutionBackend(cfg).capabilities
+        assert caps.supports_limited_downstream_tools is True
+
+    def test_api_backend_does_not_have_limited_downstream_tools_flag(self):
+        """API backend has full tool support — limited flag should be False."""
+        cfg = _make_config(anthropic_api_key="sk-test")
+        caps = ApiExecutionBackend(cfg).capabilities
+        assert caps.supports_limited_downstream_tools is False
+
+    @pytest.mark.asyncio
+    async def test_both_backends_accept_is_continuation_kwarg(self):
+        """Both backends must accept is_continuation without TypeError."""
+        # API backend
+        cfg_api = _make_config(anthropic_api_key="sk-test")
+        api_backend = ApiExecutionBackend(cfg_api)
+        expected = NormalizedProviderResult(
+            output_text="Done", turn_count=1, stop_reason="end_turn"
+        )
+        api_backend._adapter.run = AsyncMock(return_value=expected)
+        result = await api_backend.execute(
+            system_prompt="sys",
+            task="task",
+            max_turns=5,
+            is_continuation=True,
+        )
+        assert result is expected
+
+        # Claude Code backend
+        cfg_cc = _make_config()
+        cc_backend = ClaudeCodeExecutionBackend(cfg_cc)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+        with patch.object(cc_backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            cc_result = await cc_backend.execute(
+                system_prompt="sys",
+                task="task",
+                max_turns=5,
+                is_continuation=True,
+            )
+        assert isinstance(cc_result, NormalizedProviderResult)
+
+    @pytest.mark.asyncio
+    async def test_both_backends_accept_session_summary_kwarg(self):
+        """Both backends must accept session_summary without TypeError."""
+        # API backend
+        cfg_api = _make_config(anthropic_api_key="sk-test")
+        api_backend = ApiExecutionBackend(cfg_api)
+        expected = NormalizedProviderResult(
+            output_text="Done", turn_count=1, stop_reason="end_turn"
+        )
+        api_backend._adapter.run = AsyncMock(return_value=expected)
+        result = await api_backend.execute(
+            system_prompt="sys",
+            task="task",
+            max_turns=5,
+            session_summary="prior context",
+        )
+        assert result is expected
+
+        # Claude Code backend
+        cfg_cc = _make_config()
+        cc_backend = ClaudeCodeExecutionBackend(cfg_cc)
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+        with patch.object(cc_backend, "_find_cli", return_value="/usr/bin/claude"), \
+             patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            cc_result = await cc_backend.execute(
+                system_prompt="sys",
+                task="task",
+                max_turns=5,
+                session_summary="prior context",
+            )
+        assert isinstance(cc_result, NormalizedProviderResult)
+
+    def test_both_backends_have_name_property(self):
+        cfg = _make_config(anthropic_api_key="sk-test")
+        assert ApiExecutionBackend(cfg).name == "api"
+        assert ClaudeCodeExecutionBackend(cfg).name == "claude_code"
+
+    def test_both_backends_are_execution_backend_instances(self):
+        from claude_agent_mcp.backends.base import ExecutionBackend
+        cfg = _make_config(anthropic_api_key="sk-test")
+        assert isinstance(ApiExecutionBackend(cfg), ExecutionBackend)
+        assert isinstance(ClaudeCodeExecutionBackend(cfg), ExecutionBackend)

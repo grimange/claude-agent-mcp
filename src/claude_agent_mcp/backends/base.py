@@ -44,6 +44,9 @@ class BackendCapabilities:
     supports_workspace_assumptions: bool = False
     """Backend can operate on a local workspace directory natively."""
 
+    supports_limited_downstream_tools: bool = False
+    """Backend supports limited downstream tool description injection (text-based, not invocable)."""
+
 
 class ExecutionBackend(ABC):
     """Pluggable execution backend interface.
@@ -104,6 +107,7 @@ class ExecutionBackend(ABC):
         tool_executor: ToolExecutor | None = None,
         conversation_history: list[dict[str, Any]] | None = None,
         session_summary: str | None = None,
+        is_continuation: bool = False,
     ) -> "NormalizedProviderResult":
         """Execute a task (or continue a session) and return a normalized result.
 
@@ -116,6 +120,8 @@ class ExecutionBackend(ABC):
             conversation_history: Prior conversation messages for continuation.
             session_summary: Optional summary of the session so far, used by
                 backends that reconstruct context from text (e.g. claude_code).
+            is_continuation: When True, the backend may use a continuation-optimized
+                prompt structure.
 
         Returns:
             NormalizedProviderResult — no backend-specific types.

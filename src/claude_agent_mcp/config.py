@@ -20,6 +20,7 @@ Execution backend variables (v0.4):
   CLAUDE_AGENT_MCP_EXECUTION_BACKEND       — Backend: api | claude_code (default: api)
   CLAUDE_AGENT_MCP_CLAUDE_CODE_CLI_PATH    — Path to claude CLI binary (claude_code backend)
   CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT     — CLI timeout in seconds (default: 300)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING  — Enable limited tool forwarding for claude_code backend (default: false)
 
 Federation variables (v0.3):
   CLAUDE_AGENT_MCP_FEDERATION_ENABLED   — Enable downstream federation (default: false)
@@ -130,6 +131,14 @@ class Config:
         ).strip()
         self.claude_code_timeout_seconds: int = int(
             _env("CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT", default="300").strip()
+        )
+
+        # Limited tool forwarding (v0.6) — opt-in, disabled by default
+        claude_code_limited_tool_forwarding_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING", default="false"
+        ).strip().lower()
+        self.claude_code_enable_limited_tool_forwarding: bool = (
+            claude_code_limited_tool_forwarding_raw in {"true", "1", "yes"}
         )
 
         # --- Federation (v0.3) ---

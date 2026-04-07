@@ -1,4 +1,4 @@
-# Backend Capability Matrix (v0.5)
+# Backend Capability Matrix (v0.6)
 
 This document describes the capability flags declared by each execution backend in `claude-agent-mcp`. These flags are used internally by the workflow executor to emit warnings and suppress unsupported execution paths. They are not exposed in MCP tool contracts.
 
@@ -14,6 +14,7 @@ This document describes the capability flags declared by each execution backend 
 | `supports_rich_stop_reason` | Backend returns semantically rich `stop_reason` values |
 | `supports_structured_messages` | Backend accepts structured role/content message objects |
 | `supports_workspace_assumptions` | Backend can operate on a local workspace directory natively |
+| `supports_limited_downstream_tools` | Backend supports text-based tool description injection (v0.6, opt-in) |
 
 ---
 
@@ -27,6 +28,7 @@ This document describes the capability flags declared by each execution backend 
 | `supports_rich_stop_reason` | **Yes** | No |
 | `supports_structured_messages` | **Yes** | No |
 | `supports_workspace_assumptions` | No | **Yes** |
+| `supports_limited_downstream_tools` | No | **Yes** (opt-in) |
 
 ---
 
@@ -56,15 +58,24 @@ When `False` (claude_code): conversation history is not passed as a structured m
 
 When `True` (claude_code): the CLI runs in the operator's local environment and can access local files. This is useful for local development workflows.
 
+### `supports_limited_downstream_tools`
+
+When `True` (claude_code, v0.6): the backend can inject compatible downstream tool definitions as **text descriptions** into the prompt. This is not a real tool-use loop — tools are described for model context only and cannot be invoked.
+
+Enabled opt-in via `CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING=true`. When `False` (default), a consolidated downgrade warning is emitted instead.
+
+The `api` backend has `supports_limited_downstream_tools=False` because it supports full tool invocation (`supports_downstream_tools=True`) — the limited flag is irrelevant.
+
 ---
 
-## Warnings emitted by the workflow executor (v0.5)
+## Warnings emitted by the workflow executor (v0.6)
 
 The workflow executor checks backend capabilities before execution and emits warnings to the response `warnings` array when mismatches are detected.
 
 | Condition | Warning emitted |
 |---|---|
-| Federation tools resolved but backend `supports_downstream_tools=False` | Yes — advises switching to `api` backend |
+| Federation tools resolved but forwarding disabled (claude_code) | Yes — consolidated, advises `api` backend |
+| Federation tools resolved, limited forwarding enabled, incompatible tool dropped (v0.6) | Yes — per-tool, names tool and reason |
 | History truncated (claude_code) | Yes — states exchange count kept |
 | Stop-reason precision limited (claude_code) | Yes — always present |
 | Empty CLI response (claude_code) | Yes |
@@ -78,7 +89,7 @@ Capabilities are declared as a frozen `BackendCapabilities` dataclass in `src/cl
 ```python
 from claude_agent_mcp.backends.base import BackendCapabilities
 
-# Example: claude_code backend declaration
+# claude_code backend declaration (v0.6)
 BackendCapabilities(
     supports_downstream_tools=False,
     supports_structured_tool_use=False,
@@ -86,6 +97,18 @@ BackendCapabilities(
     supports_rich_stop_reason=False,
     supports_structured_messages=False,
     supports_workspace_assumptions=True,
+    supports_limited_downstream_tools=True,  # v0.6, opt-in
+)
+
+# api backend declaration
+BackendCapabilities(
+    supports_downstream_tools=True,
+    supports_structured_tool_use=True,
+    supports_native_multiturn=True,
+    supports_rich_stop_reason=True,
+    supports_structured_messages=True,
+    supports_workspace_assumptions=False,
+    supports_limited_downstream_tools=False,  # full support, not limited
 )
 ```
 
@@ -93,4 +116,5 @@ BackendCapabilities(
 
 ## Version notes
 
-This capability matrix was introduced in v0.5 (Claude Code stabilization track). Prior to v0.5, backend limitations were partially documented but not programmatically declared or surfaced as runtime warnings.
+- v0.5: Capability matrix introduced. Backend limitations declared programmatically and surfaced as runtime warnings.
+- v0.6: `supports_limited_downstream_tools` added. Claude Code backend can now inject compatible tool descriptions as text (opt-in). Continuation prompts use distinct `[Continuation Session]` framing.

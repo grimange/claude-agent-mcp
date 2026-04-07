@@ -138,25 +138,51 @@ class WorkflowExecutor:
             # Capability check: warn if tools are resolved but backend doesn't support them.
             caps = self._backend.capabilities
             if visible_tools and not caps.supports_downstream_tools:
-                cap_warning = (
-                    f"Backend '{self._backend.name}' does not support downstream federation "
-                    "tools. Visible tools will not be forwarded. Switch to the 'api' backend "
-                    "to use federation tools."
-                )
-                warnings.append(cap_warning)
-                await self._sessions.append_event(
-                    session_id, EventType.downstream_tool_catalog_resolved, 0,
-                    {
-                        "visible_tools": [t["name"] for t in visible_tools],
-                        "forwarded": False,
-                        "reason": f"backend '{self._backend.name}' does not support downstream tools",
-                    },
-                )
-                result = await self._backend.execute(
-                    system_prompt=profile.system_prompt,
-                    task=req.task,
-                    max_turns=max_turns,
-                )
+                if (
+                    caps.supports_limited_downstream_tools
+                    and getattr(self._config, "claude_code_enable_limited_tool_forwarding", False)
+                ):
+                    # v0.6: Limited tool forwarding — screen tools, inject compatible ones as text
+                    from claude_agent_mcp.backends.claude_code_backend import ClaudeCodeExecutionBackend
+                    compatible, screened_out = ClaudeCodeExecutionBackend.screen_tools(visible_tools)
+                    await self._sessions.append_event(
+                        session_id, EventType.downstream_tool_catalog_resolved, 0,
+                        {
+                            "visible_tools": [t["name"] for t in visible_tools],
+                            "forwarded": len(compatible),
+                            "dropped": len(screened_out),
+                            "dropped_names": [r.tool_name for r in screened_out],
+                            "forwarding_mode": "limited_text_injection",
+                        },
+                    )
+                    result = await self._backend.execute(
+                        system_prompt=profile.system_prompt,
+                        task=req.task,
+                        max_turns=max_turns,
+                        tools=compatible if compatible else None,
+                        is_continuation=False,
+                    )
+                else:
+                    cap_warning = (
+                        f"Backend '{self._backend.name}' does not support downstream federation "
+                        "tools. Visible tools will not be forwarded. Switch to the 'api' backend "
+                        "to use federation tools."
+                    )
+                    warnings.append(cap_warning)
+                    await self._sessions.append_event(
+                        session_id, EventType.downstream_tool_catalog_resolved, 0,
+                        {
+                            "visible_tools": [t["name"] for t in visible_tools],
+                            "forwarded": False,
+                            "reason": f"backend '{self._backend.name}' does not support downstream tools",
+                        },
+                    )
+                    result = await self._backend.execute(
+                        system_prompt=profile.system_prompt,
+                        task=req.task,
+                        max_turns=max_turns,
+                        is_continuation=False,
+                    )
             elif visible_tools and invoker is not None:
                 await self._sessions.append_event(
                     session_id, EventType.downstream_tool_catalog_resolved, 0,
@@ -168,12 +194,14 @@ class WorkflowExecutor:
                     max_turns=max_turns,
                     tools=visible_tools,
                     tool_executor=self._make_tool_executor(invoker, session_id, 0),
+                    is_continuation=False,
                 )
             else:
                 result = await self._backend.execute(
                     system_prompt=profile.system_prompt,
                     task=req.task,
                     max_turns=max_turns,
+                    is_continuation=False,
                 )
 
             warnings.extend(result.warnings)
@@ -299,27 +327,55 @@ class WorkflowExecutor:
             # Capability check: warn if tools are resolved but backend doesn't support them.
             caps = self._backend.capabilities
             if visible_tools and not caps.supports_downstream_tools:
-                cap_warning = (
-                    f"Backend '{self._backend.name}' does not support downstream federation "
-                    "tools. Visible tools will not be forwarded. Switch to the 'api' backend "
-                    "to use federation tools."
-                )
-                warnings.append(cap_warning)
-                await self._sessions.append_event(
-                    req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
-                    {
-                        "visible_tools": [t["name"] for t in visible_tools],
-                        "forwarded": False,
-                        "reason": f"backend '{self._backend.name}' does not support downstream tools",
-                    },
-                )
-                result = await self._backend.execute(
-                    system_prompt=profile.system_prompt,
-                    task=req.message,
-                    max_turns=max_turns,
-                    conversation_history=history,
-                    session_summary=session.summary_latest,
-                )
+                if (
+                    caps.supports_limited_downstream_tools
+                    and getattr(self._config, "claude_code_enable_limited_tool_forwarding", False)
+                ):
+                    # v0.6: Limited tool forwarding — screen tools, inject compatible ones as text
+                    from claude_agent_mcp.backends.claude_code_backend import ClaudeCodeExecutionBackend
+                    compatible, screened_out = ClaudeCodeExecutionBackend.screen_tools(visible_tools)
+                    await self._sessions.append_event(
+                        req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
+                        {
+                            "visible_tools": [t["name"] for t in visible_tools],
+                            "forwarded": len(compatible),
+                            "dropped": len(screened_out),
+                            "dropped_names": [r.tool_name for r in screened_out],
+                            "forwarding_mode": "limited_text_injection",
+                        },
+                    )
+                    result = await self._backend.execute(
+                        system_prompt=profile.system_prompt,
+                        task=req.message,
+                        max_turns=max_turns,
+                        tools=compatible if compatible else None,
+                        conversation_history=history,
+                        session_summary=session.summary_latest,
+                        is_continuation=True,
+                    )
+                else:
+                    cap_warning = (
+                        f"Backend '{self._backend.name}' does not support downstream federation "
+                        "tools. Visible tools will not be forwarded. Switch to the 'api' backend "
+                        "to use federation tools."
+                    )
+                    warnings.append(cap_warning)
+                    await self._sessions.append_event(
+                        req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
+                        {
+                            "visible_tools": [t["name"] for t in visible_tools],
+                            "forwarded": False,
+                            "reason": f"backend '{self._backend.name}' does not support downstream tools",
+                        },
+                    )
+                    result = await self._backend.execute(
+                        system_prompt=profile.system_prompt,
+                        task=req.message,
+                        max_turns=max_turns,
+                        conversation_history=history,
+                        session_summary=session.summary_latest,
+                        is_continuation=True,
+                    )
             elif visible_tools and invoker is not None:
                 await self._sessions.append_event(
                     req.session_id, EventType.downstream_tool_catalog_resolved, session.turn_count,
@@ -333,6 +389,7 @@ class WorkflowExecutor:
                     tool_executor=self._make_tool_executor(invoker, req.session_id, session.turn_count),
                     conversation_history=history,
                     session_summary=session.summary_latest,
+                    is_continuation=True,
                 )
             else:
                 result = await self._backend.execute(
@@ -341,6 +398,7 @@ class WorkflowExecutor:
                     max_turns=max_turns,
                     conversation_history=history,
                     session_summary=session.summary_latest,
+                    is_continuation=True,
                 )
 
             warnings.extend(result.warnings)

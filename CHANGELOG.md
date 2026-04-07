@@ -7,6 +7,104 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.0] — 2026-04-08
+
+### Claude Code capability-expansion track release
+
+This release expands the practical usefulness of the `claude_code` execution
+backend after the v0.5 stabilization work. No new public MCP tools, profiles,
+or session semantics were added. All v0.5 MCP tool contracts and response
+envelopes are unchanged. The `api` backend is unaffected and does not regress.
+
+### Added
+
+- **Limited downstream tool forwarding** (`claude_code` backend, opt-in) —
+  when `CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING=true`, compatible
+  downstream tools are screened and injected as text descriptions into the
+  structured prompt (`[Available Tools]` section). This is **not** a real
+  tool-use loop — tools are informational context only; the CLI cannot invoke
+  them. Disabled by default.
+- **`ToolCompatibilityLevel` enum and `ToolScreenResult` dataclass**
+  (`backends/claude_code_backend.py`) — three rejection levels:
+  `missing_description`, `schema_unsupported` (uses `$ref`, `allOf`, `anyOf`,
+  `oneOf`, or `not`), `complex_schema` (>5 top-level schema properties).
+- **`screen_tool()` and `screen_tools()` static methods** on
+  `ClaudeCodeExecutionBackend` — deterministic compatibility screening for
+  individual and batched tool lists.
+- **`_build_tool_descriptions_section()` method** — formats compatible tools
+  as a structured `[Available Tools]` text section with name, description,
+  parameters, required/optional labels, and an explicit "not invocable" notice.
+- **`supports_limited_downstream_tools` capability flag** (`backends/base.py`)
+  — added to `BackendCapabilities`. `claude_code` backend declares `True`; `api`
+  backend declares `False` (full tool support supersedes the limited flag).
+- **Continuation prompt framing** (`claude_code` backend, v0.6) — when
+  `is_continuation=True`, the prompt uses `[Continuation Session]` instead of
+  `[Session Context]` for the header, and the `[Instructions]` section reads
+  "You are continuing this session. Resume from where you left off." Initial
+  prompts retain `[Session Context]` framing.
+- **Capability-aware forwarding in workflow executor** — `run_task` and
+  `continue_session` check `supports_limited_downstream_tools` before the
+  existing `supports_downstream_tools` check. When limited forwarding is active,
+  compatible tools are passed to the backend; dropped tools are logged as session
+  events with `dropped_names` and `forwarding_mode: limited_text_injection`.
+- **Config field** — `claude_code_enable_limited_tool_forwarding` (bool, default
+  `False`). Env var: `CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING`.
+- **Tests** — `tests/test_claude_code_tool_forwarding.py` (28 new tests):
+  tool screening, batch screening, tool description formatting, forwarding
+  enabled/disabled behavior, per-tool vs. consolidated warnings, continuation
+  framing. `TestCrossBackendContractV6` class (9 tests) added to
+  `tests/test_backends.py`. Total test count: 225 (up from 196).
+- **Docs** — `docs/claude-code-backend.md` and `docs/backend-capability-matrix.md`
+  updated to v0.6 with limited forwarding section, continuation framing docs,
+  updated capability tables, and updated warning reference.
+
+### Changed
+
+- `backends/claude_code_backend.py` — `_build_structured_prompt()` extended
+  with `tools` and `is_continuation` parameters. Continuation framing branching
+  added. `execute()` updated with tool forwarding/screening logic.
+- `backends/api_backend.py` — `execute()` accepts `is_continuation` kwarg for
+  interface symmetry (ignored; API backend handles multi-turn natively).
+  `capabilities` now explicitly declares `supports_limited_downstream_tools=False`.
+- `backends/base.py` — `BackendCapabilities` extended with
+  `supports_limited_downstream_tools` field (default `False`). `execute()`
+  signature extended with `is_continuation` parameter.
+- `runtime/workflow_executor.py` — capability-aware tool forwarding branch
+  added to both `run_task` and `continue_session`.
+- `config.py` — `claude_code_enable_limited_tool_forwarding` field added.
+
+### Warnings now surfaced
+
+| Condition | Appears in `warnings` field |
+|---|---|
+| Tools visible, forwarding disabled (default) | Yes — consolidated, advises `api` backend |
+| Tools visible, forwarding enabled, tool dropped | Yes — per-tool, names tool and reason |
+| History truncated beyond exchange limit | Yes — states count kept |
+| Stop-reason precision limited | Yes — always present |
+| Empty CLI response | Yes |
+
+### Backend capability declarations (v0.6)
+
+| Capability | `api` | `claude_code` |
+|---|---|---|
+| `supports_downstream_tools` | Yes | No |
+| `supports_structured_tool_use` | Yes | No |
+| `supports_native_multiturn` | Yes | No |
+| `supports_rich_stop_reason` | Yes | No |
+| `supports_structured_messages` | Yes | No |
+| `supports_workspace_assumptions` | No | Yes |
+| `supports_limited_downstream_tools` | No | Yes (opt-in) |
+
+### Known limitations (claude_code backend, v0.6)
+
+- Single-turn per CLI invocation; no native multi-turn tool-use loop.
+- Limited tool forwarding is text-based context only — tools cannot be invoked.
+- Full federation tool-use requires the `api` backend.
+- History is reconstructed as structured labeled text, not Messages API objects.
+- `stop_reason` is always `backend_defaulted`.
+
+---
+
 ## [0.5.0] — 2026-04-07
 
 ### Claude Code stabilization track release
