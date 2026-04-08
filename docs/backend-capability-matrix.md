@@ -1,4 +1,4 @@
-# Backend Capability Matrix (v0.7.0)
+# Backend Capability Matrix (v0.8.0)
 
 This document describes the capability flags declared by each execution backend in `claude-agent-mcp`. These flags are used internally by the workflow executor to emit warnings and suppress unsupported execution paths. They are not exposed in MCP tool contracts.
 
@@ -17,6 +17,8 @@ This document describes the capability flags declared by each execution backend 
 | `supports_limited_downstream_tools` | Backend supports text-based tool description injection (v0.6, opt-in) |
 | `supports_structured_continuation_context` | Backend accepts and uses `SessionContinuationContext` for continuation (v0.7.0) |
 | `supports_continuation_window_policy` | Backend respects `ContinuationWindowPolicy` for bounded reconstruction (v0.7.0) |
+| `supports_execution_mediation` | Backend output may contain structured mediated action requests processed by the runtime (v0.8.0) |
+| `supports_mediated_action_results` | Backend supports inclusion of mediated action results in continuation context (v0.8.0) |
 
 ---
 
@@ -33,6 +35,8 @@ This document describes the capability flags declared by each execution backend 
 | `supports_limited_downstream_tools` | No | **Yes** (opt-in) |
 | `supports_structured_continuation_context` | No | **Yes** (v0.7.0) |
 | `supports_continuation_window_policy` | No | **Yes** (v0.7.0) |
+| `supports_execution_mediation` | No | **Yes** (v0.8.0, opt-in) |
+| `supports_mediated_action_results` | No | **Yes** (v0.8.0, opt-in) |
 
 ---
 
@@ -88,6 +92,24 @@ When `True` (claude_code): the backend respects a `ContinuationWindowPolicy` tha
 
 When `False` (api): not applicable. The API backend manages context natively.
 
+### `supports_execution_mediation` (v0.8.0)
+
+When `True` (claude_code): the backend's text output may contain structured mediated action request blocks. The **runtime** (not the backend) detects, validates against policy and federation visibility, and executes approved requests.
+
+> **This is not native tool calling.** The Claude Code CLI has no tool invocation protocol. Mediated execution is text-pattern detection and runtime dispatch — not backend-native tool use.
+
+Enabled opt-in via `CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION=true`. Disabled by default.
+
+When `False` (api): not applicable. The API backend has full native `tool_use` / `tool_result` support.
+
+### `supports_mediated_action_results` (v0.8.0)
+
+When `True` (claude_code): compact summaries of completed mediated actions can be included in continuation context prompts via the `[Mediated Execution Context]` section.
+
+Enabled opt-in via `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION=true`. Disabled by default.
+
+When `False` (api): not applicable.
+
 ---
 
 ## Warnings emitted by the workflow executor (v0.7.0)
@@ -125,7 +147,7 @@ Capabilities are declared as a frozen `BackendCapabilities` dataclass in `src/cl
 ```python
 from claude_agent_mcp.backends.base import BackendCapabilities
 
-# claude_code backend declaration (v0.7.0)
+# claude_code backend declaration (v0.8.0)
 BackendCapabilities(
     supports_downstream_tools=False,
     supports_structured_tool_use=False,
@@ -136,6 +158,8 @@ BackendCapabilities(
     supports_limited_downstream_tools=True,           # v0.6, opt-in
     supports_structured_continuation_context=True,    # v0.7.0
     supports_continuation_window_policy=True,         # v0.7.0
+    supports_execution_mediation=True,                # v0.8.0, opt-in via config
+    supports_mediated_action_results=True,            # v0.8.0, opt-in via config
 )
 
 # api backend declaration
@@ -149,8 +173,22 @@ BackendCapabilities(
     supports_limited_downstream_tools=False,          # full support, not limited
     supports_structured_continuation_context=False,   # API backend has native multi-turn
     supports_continuation_window_policy=False,        # not applicable
+    supports_execution_mediation=False,               # not applicable — API has native tool use
+    supports_mediated_action_results=False,           # not applicable
 )
 ```
+
+---
+
+## Warnings emitted for mediation (v0.8.0)
+
+When mediation is enabled and requests are rejected, warnings are added to the response `warnings` array:
+
+| Condition | Warning |
+|---|---|
+| Mediated action rejected by any policy gate | Yes — names request_id, tool, reason, and policy_decision code |
+
+Rejected actions are also recorded as `mediated_action_rejected` session events for operator audit.
 
 ---
 
@@ -159,3 +197,4 @@ BackendCapabilities(
 - v0.5: Capability matrix introduced. Backend limitations declared programmatically and surfaced as runtime warnings.
 - v0.6: `supports_limited_downstream_tools` added. Claude Code backend can now inject compatible tool descriptions as text (opt-in). Continuation prompts use distinct `[Continuation Session]` framing.
 - v0.7.0: `supports_structured_continuation_context` and `supports_continuation_window_policy` added. Claude Code backend uses a deterministic `SessionContinuationContext` for all continuation calls. Warning carry-forward is classified and bounded. Forwarding history is summarized. Continuation reconstruction decisions are recorded as inspectable session events.
+- v0.8.0: `supports_execution_mediation` and `supports_mediated_action_results` added. Claude Code backend output may contain structured mediated action request blocks. The runtime validates and executes approved requests under explicit policy control. This is NOT native tool calling. All mediation events are persisted as session events for operator inspection. Mediated results can optionally be summarized in continuation context.

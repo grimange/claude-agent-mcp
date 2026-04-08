@@ -34,12 +34,15 @@ from claude_agent_mcp.runtime.continuation_builder import ContinuationContextBui
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
 from claude_agent_mcp.runtime.profile_registry import Profile, ProfileRegistry
 from claude_agent_mcp.runtime.session_store import SessionStore
+from claude_agent_mcp.runtime.mediation_engine import MediationEngine
 from claude_agent_mcp.types import (
     AgentResponse,
     ArtifactReference,
     ContinueSessionRequest,
     ErrorObject,
     EventType,
+    MediatedActionResult,
+    MediatedActionStatus,
     NormalizedProviderResult,
     NormalizedVerificationResult,
     ProfileName,
@@ -76,6 +79,8 @@ class WorkflowExecutor:
         self._backend = execution_backend
         self._visibility_resolver: ToolVisibilityResolver | None = visibility_resolver
         self._federation_server_configs: list = federation_server_configs or []
+        # v0.8.0: Execution mediation engine
+        self._mediation = MediationEngine(config, visibility_resolver)
 
     # ------------------------------------------------------------------
     # run_task
@@ -206,6 +211,22 @@ class WorkflowExecutor:
                 )
 
             warnings.extend(result.warnings)
+
+            # v0.8.0: Process mediated action requests from backend output.
+            mediated_results = await self._process_mediated_actions(
+                output_text=result.output_text,
+                session_id=session_id,
+                profile_name=req.system_profile.value,
+                turn_index=result.turn_count,
+                invoker=invoker,
+            )
+            for mr in mediated_results:
+                if mr.status == MediatedActionStatus.rejected:
+                    warnings.append(
+                        f"Mediated action {mr.request_id!r} for tool {mr.tool_name!r} "
+                        f"rejected — {mr.failure_reason} (policy: {mr.policy_decision})"
+                    )
+
             summary = self._make_summary(result.output_text)
 
             await self._sessions.append_event(
@@ -323,6 +344,7 @@ class WorkflowExecutor:
                     session=session,
                     events=all_events,
                     policy=policy,
+                    config=self._config,
                 )
                 # Record continuation context built event
                 stats_dict = {}
@@ -456,7 +478,23 @@ class WorkflowExecutor:
                 )
 
             warnings.extend(result.warnings)
+
+            # v0.8.0: Process mediated action requests from backend output.
             new_turn_count = session.turn_count + result.turn_count
+            mediated_results = await self._process_mediated_actions(
+                output_text=result.output_text,
+                session_id=req.session_id,
+                profile_name=session.profile.value,
+                turn_index=new_turn_count,
+                invoker=invoker,
+            )
+            for mr in mediated_results:
+                if mr.status == MediatedActionStatus.rejected:
+                    warnings.append(
+                        f"Mediated action {mr.request_id!r} for tool {mr.tool_name!r} "
+                        f"rejected — {mr.failure_reason} (policy: {mr.policy_decision})"
+                    )
+
             summary = self._make_summary(result.output_text)
 
             await self._sessions.append_event(
@@ -879,6 +917,136 @@ class WorkflowExecutor:
             )
             return result.to_content_string()
         return _executor
+
+    # ------------------------------------------------------------------
+    # Execution mediation (v0.8.0)
+    # ------------------------------------------------------------------
+
+    async def _process_mediated_actions(
+        self,
+        output_text: str,
+        session_id: str,
+        profile_name: str,
+        turn_index: int,
+        invoker: DownstreamToolInvoker | None,
+    ) -> list[MediatedActionResult]:
+        """Parse, validate, and execute mediated action requests from backend output.
+
+        Called after each backend execution. Only runs if the backend declares
+        supports_execution_mediation. Returns all results (approved+executed,
+        approved+failed, rejected) for caller to emit warnings and persist events.
+
+        Args:
+            output_text: Raw backend output text to parse requests from.
+            session_id: Active session identifier.
+            profile_name: Active profile name for visibility validation.
+            turn_index: Current turn index for session event persistence.
+            invoker: Federation invoker for executing approved actions.
+                     When None, all requests requiring federation are rejected.
+
+        Returns:
+            List of MediatedActionResult objects for all parsed requests.
+        """
+        caps = self._backend.capabilities
+        if not getattr(caps, "supports_execution_mediation", False):
+            return []
+
+        requests = self._mediation.parse_requests(output_text)
+        if not requests:
+            return []
+
+        results: list[MediatedActionResult] = []
+        actions_approved_this_turn = 0
+
+        for req in requests:
+            # Persist: action requested
+            await self._sessions.append_event(
+                session_id,
+                EventType.mediated_action_requested,
+                turn_index,
+                {
+                    "request_id": req.request_id,
+                    "action_type": req.action_type.value,
+                    "target_tool": req.target_tool,
+                    "justification": req.justification[:200],
+                    "mediation_version": req.mediation_version,
+                },
+            )
+
+            is_approved, policy_decision = self._mediation.validate_request(
+                req, profile_name, actions_approved_this_turn
+            )
+
+            if not is_approved:
+                # Persist: action rejected
+                result = self._mediation.make_rejection_result(req, policy_decision)
+                await self._sessions.append_event(
+                    session_id,
+                    EventType.mediated_action_rejected,
+                    turn_index,
+                    {
+                        "request_id": req.request_id,
+                        "target_tool": req.target_tool,
+                        "policy_decision": policy_decision,
+                        "failure_reason": result.failure_reason,
+                    },
+                )
+                logger.info(
+                    "Mediated action %r rejected: %s", req.request_id, policy_decision
+                )
+                results.append(result)
+                continue
+
+            # Persist: action approved
+            await self._sessions.append_event(
+                session_id,
+                EventType.mediated_action_approved,
+                turn_index,
+                {
+                    "request_id": req.request_id,
+                    "target_tool": req.target_tool,
+                    "action_type": req.action_type.value,
+                    "policy_decision": policy_decision,
+                },
+            )
+            actions_approved_this_turn += 1
+
+            # Execute the approved action.
+            # invoker must be non-None here: validate_request rejects when
+            # visibility_resolver is None, and invoker is None iff visibility_resolver is None.
+            if invoker is None:
+                logger.error(
+                    "mediation: invoker is None for approved action %r — this is a bug",
+                    req.request_id,
+                )
+                result = self._mediation.make_rejection_result(
+                    req, "rejected:internal_invoker_unavailable"
+                )
+                results.append(result)
+                continue
+
+            result = await self._mediation.execute_action(
+                req, invoker, session_id, turn_index
+            )
+
+            # Persist: action completed (or failed)
+            await self._sessions.append_event(
+                session_id,
+                EventType.mediated_action_completed,
+                turn_index,
+                {
+                    "request_id": req.request_id,
+                    "target_tool": req.target_tool,
+                    "status": result.status.value,
+                    "arguments_summary": result.arguments_summary,
+                    "result_summary": result.result_summary[:200],
+                    "failure_reason": result.failure_reason,
+                    "policy_decision": result.policy_decision,
+                },
+            )
+            results.append(result)
+
+        return results
 
     def _error_response(
         self,

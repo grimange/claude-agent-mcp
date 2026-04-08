@@ -7,6 +7,138 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.0] — 2026-04-08
+
+### Claude Code execution mediation track release
+
+This release introduces a governed execution mediation layer for the `claude_code` backend.
+Claude Code mode can now request bounded follow-up actions in a strict structured format;
+the runtime validates, mediates, and executes approved requests under existing policy controls.
+
+This is **not** native tool calling in Claude Code mode. The backend produces normal text output;
+the runtime detects structured request blocks and dispatches them. The backend has no tool
+invocation protocol of its own.
+
+No new public MCP tools, profiles, or session semantics were added. All v0.7.0 MCP tool
+contracts and response envelopes are unchanged. The `api` backend is unaffected and does
+not regress.
+
+### Added
+
+- **`MediationEngine` class** (`runtime/mediation_engine.py`, new file) — stateless engine
+  owned by the `WorkflowExecutor`. Implements three responsibilities: parsing structured
+  request blocks from backend output (`parse_requests()`), validating requests through six
+  policy gates (`validate_request()`), and executing approved actions through the federation
+  invoker (`execute_action()`). Never raises — execution failures produce a `failed` result.
+- **`MediatedActionRequest` model** (`types.py`) — internal model for requests parsed from
+  backend output. Fields: `mediation_version`, `request_id`, `action_type`, `target_tool`,
+  `arguments`, `justification`.
+- **`MediatedActionResult` model** (`types.py`) — normalized result for every mediated action
+  (approved+completed, approved+failed, or rejected). Fields: `request_id`, `status`,
+  `tool_name`, `arguments_summary`, `result_summary`, `failure_reason`, `policy_decision`.
+- **`MediatedActionType` enum** (`types.py`) — three allowed types: `read`, `lookup`,
+  `inspect`. All are read-style and non-destructive. Mutating types are not supported.
+- **`MediatedActionStatus` enum** (`types.py`) — four states: `approved`, `rejected`,
+  `completed`, `failed`.
+- **Four new `EventType` values** (`types.py`) — `mediated_action_requested`,
+  `mediated_action_approved`, `mediated_action_rejected`, `mediated_action_completed`.
+  Persisted by the workflow executor for every parsed request, enabling full operator audit.
+- **`WorkflowExecutor._process_mediated_actions()` helper** — called after each backend
+  execution in both `run_task` and `continue_session`. Parses requests, runs validation,
+  executes approved actions, persists all four event types, and returns results to the
+  caller. Rejected actions emit a warning in the `AgentResponse.warnings` array.
+- **`[Mediated Execution Context]` continuation section** (`claude_code_backend.py`) —
+  rendered in structured continuation prompts when `mediated_action_summaries` are present.
+  Includes a disclaimer that actions were runtime-mediated, not native tool calls. Section
+  is omitted entirely when the list is empty (no regression for existing sessions).
+- **`mediated_action_summaries` field** on `SessionContinuationContext` (`types.py`) —
+  compact summaries of prior mediated action results. Default `[]`; populated by
+  `ContinuationContextBuilder` when `claude_code_include_mediated_results_in_continuation`
+  is enabled.
+- **`ContinuationContextBuilder._extract_mediated_summaries()` static method** — derives
+  compact per-action summary strings from `mediated_action_completed` session events.
+  Only includes status=`completed` entries; rejected and failed entries are excluded.
+  Summary strings are truncated at 150 characters.
+- **`supports_execution_mediation` capability flag** (`backends/base.py`) — `claude_code`
+  backend declares `True`; `api` backend declares `False`. When `False` in the workflow
+  executor, mediation processing is skipped entirely.
+- **`supports_mediated_action_results` capability flag** (`backends/base.py`) — `claude_code`
+  backend declares `True`; `api` backend declares `False`.
+- **Four new config fields** (`config.py`) — all disabled/conservative by default:
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION` (bool, default `false`)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_ACTIONS_PER_TURN` (int, default `1`)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_ACTION_TYPES` (comma-separated, default all supported types)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION` (bool, default `false`)
+- **Tests** — `tests/test_v08_mediation.py` (77 new tests) covering: model validation,
+  request parsing (valid, malformed, missing fields, unknown type), all six validation
+  rejection paths, successful execution, execution failure, event persistence, rejection
+  warnings in `AgentResponse`, continuation summarization enabled/disabled, `[Mediated
+  Execution Context]` section rendering, capability flags, determinism regression,
+  and no-side-effects regression for normal output and sessions without mediation events.
+  Total test count: 364 (up from 287).
+- **Docs** — `docs/claude-code-backend.md` and `docs/backend-capability-matrix.md`
+  updated to v0.8.0 with execution mediation section, request format reference,
+  validation gate table, observability event table, continuation integration,
+  updated capability tables, and explicit "not native tool calling" disclaimers.
+
+### Changed
+
+- `runtime/workflow_executor.py` — `WorkflowExecutor.__init__()` instantiates a
+  `MediationEngine(config, visibility_resolver)`. `run_task()` and `continue_session()`
+  call `_process_mediated_actions()` after backend execution. Rejected mediated actions
+  append a warning to the response `warnings` array (naming the request_id, tool, reason,
+  and policy decision code). `continue_session()` passes `config=self._config` to
+  `ContinuationContextBuilder.build_context()`.
+- `runtime/continuation_builder.py` — `_RECONSTRUCTION_VERSION` bumped to `"v0.8.0"`.
+  `build_context()` accepts optional `config` parameter (default `None`; backward
+  compatible). `SessionContinuationContext` gains `mediated_action_summaries` field
+  (default `[]`; backward compatible).
+- `backends/claude_code_backend.py` — `capabilities` updated with two new `True` flags.
+  `_build_continuation_prompt()` renders `[Mediated Execution Context]` section when
+  `continuation_context.mediated_action_summaries` is non-empty.
+- `types.py` — `SessionContinuationContext.reconstruction_version` default bumped
+  from `"v0.7.0"` to `"v0.8.0"`.
+
+### Mediation validation gates (in order)
+
+| Gate | Rejection code |
+|---|---|
+| `claude_code_enable_execution_mediation` is `true` | `rejected:mediation_disabled` |
+| `mediation_version` matches `"v0.8.0"` | `rejected:unsupported_mediation_version` |
+| `action_type` is in allowed set | `rejected:action_type_not_allowed` |
+| Per-turn count < `max_mediated_actions_per_turn` | `rejected:per_turn_action_limit_exceeded` |
+| Federation is active (visibility resolver present) | `rejected:federation_inactive` |
+| `target_tool` visible for active profile | `rejected:tool_not_visible` |
+
+### Backend capability declarations (v0.8.0)
+
+| Capability | `api` | `claude_code` |
+|---|---|---|
+| `supports_downstream_tools` | Yes | No |
+| `supports_structured_tool_use` | Yes | No |
+| `supports_native_multiturn` | Yes | No |
+| `supports_rich_stop_reason` | Yes | No |
+| `supports_structured_messages` | Yes | No |
+| `supports_workspace_assumptions` | No | Yes |
+| `supports_limited_downstream_tools` | No | Yes (opt-in) |
+| `supports_structured_continuation_context` | No | Yes (v0.7.0) |
+| `supports_continuation_window_policy` | No | Yes (v0.7.0) |
+| `supports_execution_mediation` | No | **Yes** (v0.8.0, opt-in) |
+| `supports_mediated_action_results` | No | **Yes** (v0.8.0, opt-in) |
+
+### Explicitly preserved limitations (v0.8.0)
+
+- Single-turn per CLI invocation; no native multi-turn tool-use loop.
+- Mediation is not native tool calling — the CLI has no tool invocation protocol.
+- Mediated execution requires active federation; without it, all requests receive
+  `rejected:federation_inactive`.
+- Limited tool forwarding remains text-based context only (tools cannot be invoked).
+- Full federation tool-use requires the `api` backend.
+- `stop_reason` is always `backend_defaulted`.
+- No open-ended autonomous execution chains — per-turn action count capped at 1 by default.
+
+---
+
 ## [0.7.0] — 2026-04-08
 
 ### Claude Code session continuity track release

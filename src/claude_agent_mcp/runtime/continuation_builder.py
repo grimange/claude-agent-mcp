@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RECONSTRUCTION_VERSION = "v0.7.0"
+_RECONSTRUCTION_VERSION = "v0.8.0"
 
 
 class ContinuationContextBuilder:
@@ -70,6 +70,7 @@ class ContinuationContextBuilder:
         session: "SessionRecord",
         events: list["SessionEventRecord"],
         policy: ContinuationWindowPolicy,
+        config: "Config | None" = None,
     ) -> SessionContinuationContext:
         """Build a structured continuation context from persisted session state.
 
@@ -77,6 +78,8 @@ class ContinuationContextBuilder:
             session: The canonical session record.
             events: All events for the session (append-only log).
             policy: The continuation window policy controlling what is included.
+            config: Optional runtime config for v0.8.0 mediation inclusion policy.
+                    When None, mediated action summaries are not included.
 
         Returns:
             A SessionContinuationContext ready for use in prompt rendering.
@@ -125,6 +128,9 @@ class ContinuationContextBuilder:
             reconstruction_version=_RECONSTRUCTION_VERSION,
         )
 
+        # v0.8.0: Include mediated action summaries when config allows.
+        mediated_summaries = cls._extract_mediated_summaries(events, config)
+
         ctx = SessionContinuationContext(
             session_id=session.session_id,
             is_continuation=True,
@@ -137,6 +143,7 @@ class ContinuationContextBuilder:
             continuity_notes=cls._build_continuity_notes(session, render_stats),
             reconstruction_version=_RECONSTRUCTION_VERSION,
             render_stats=render_stats,
+            mediated_action_summaries=mediated_summaries,
         )
 
         if turns_omitted > 0 or warnings_omitted > 0 or forwarding_omitted > 0:
@@ -330,3 +337,50 @@ class ContinuationContextBuilder:
             notes.append(f"Session has completed {session.turn_count} turn(s) so far.")
 
         return notes
+
+    @staticmethod
+    def _extract_mediated_summaries(
+        events: list["SessionEventRecord"],
+        config: "Config | None",
+    ) -> list[str]:
+        """Extract compact mediated action result summaries from session events (v0.8.0).
+
+        Only included when ``claude_code_include_mediated_results_in_continuation``
+        is enabled in config. When config is None or the flag is disabled, returns [].
+
+        Produces one compact line per completed mediated action:
+            "Tool <name> (<action_type>): <result_summary>"
+
+        Args:
+            events: All session events.
+            config: Runtime config controlling inclusion.
+
+        Returns:
+            List of compact summary strings. Empty when disabled or no events found.
+        """
+        if config is None:
+            return []
+        if not getattr(config, "claude_code_include_mediated_results_in_continuation", False):
+            return []
+
+        summaries: list[str] = []
+        for event in events:
+            if event.event_type == EventType.mediated_action_completed:
+                tool_name = event.payload.get("tool_name", event.payload.get("target_tool", ""))
+                status = event.payload.get("status", "")
+                result_summary = event.payload.get("result_summary", "")
+                action_type = event.payload.get("action_type", "")
+
+                if status == "completed" and tool_name:
+                    label = f"Tool {tool_name}"
+                    if action_type:
+                        label += f" ({action_type})"
+                    if result_summary:
+                        summary_text = result_summary[:150]
+                        if len(result_summary) > 150:
+                            summary_text += " [truncated]"
+                        summaries.append(f"{label}: {summary_text}")
+                    else:
+                        summaries.append(f"{label}: (completed, no result summary)")
+
+        return summaries

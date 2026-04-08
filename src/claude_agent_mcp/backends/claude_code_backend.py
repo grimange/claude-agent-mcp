@@ -1,4 +1,4 @@
-"""Claude Code execution backend for claude-agent-mcp (v0.5/v0.6/v0.7.0).
+"""Claude Code execution backend for claude-agent-mcp (v0.5/v0.6/v0.7.0/v0.8.0).
 
 Executes tasks through the Claude Code CLI rather than direct API calls.
 This allows operators who have Claude Code installed (and authenticated via
@@ -13,7 +13,7 @@ Implementation:
     CLI-backed. Invokes `claude --print "<prompt>"` as a subprocess and
     collects stdout as the normalized output text.
 
-Capabilities (v0.5/v0.6/v0.7.0):
+Capabilities (v0.5/v0.6/v0.7.0/v0.8.0):
     - supports_downstream_tools: False — federation tools are not forwarded.
     - supports_structured_tool_use: False — no agentic tool-use loop.
     - supports_native_multiturn: False — single invocation per call.
@@ -23,6 +23,8 @@ Capabilities (v0.5/v0.6/v0.7.0):
     - supports_limited_downstream_tools: True — text-based tool description injection (v0.6, opt-in).
     - supports_structured_continuation_context: True — uses SessionContinuationContext (v0.7.0).
     - supports_continuation_window_policy: True — respects ContinuationWindowPolicy (v0.7.0).
+    - supports_execution_mediation: True — output may contain mediated action requests (v0.8.0).
+    - supports_mediated_action_results: True — mediated results can be summarized in continuation (v0.8.0).
 
 Context reconstruction (v0.5):
     Continuation history is rendered in a structured format with clear role
@@ -158,7 +160,7 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
 
     @property
     def capabilities(self) -> BackendCapabilities:
-        """Declare claude_code backend capabilities (v0.5/v0.6/v0.7.0)."""
+        """Declare claude_code backend capabilities (v0.5/v0.6/v0.7.0/v0.8.0)."""
         return BackendCapabilities(
             supports_downstream_tools=False,
             supports_structured_tool_use=False,
@@ -169,6 +171,8 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
             supports_limited_downstream_tools=True,
             supports_structured_continuation_context=True,
             supports_continuation_window_policy=True,
+            supports_execution_mediation=True,
+            supports_mediated_action_results=True,
         )
 
     def _find_cli(self) -> str | None:
@@ -496,6 +500,21 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
             for key, value in constraints.items():
                 constraint_lines.append(f"{key}: {value}")
             parts.append("\n".join(constraint_lines))
+
+        # [Mediated Execution Context] — v0.8.0: prior mediated action results (when present)
+        mediated_summaries = getattr(continuation_context, "mediated_action_summaries", [])
+        if mediated_summaries:
+            mediated_lines: list[str] = [
+                "[Mediated Execution Context]",
+                "The following tool actions were executed by the runtime on your behalf "
+                "during prior turns:",
+            ]
+            for summary in mediated_summaries:
+                mediated_lines.append(f"- {summary}")
+            mediated_lines.append(
+                "Note: These were runtime-mediated actions — not native tool calls."
+            )
+            parts.append("\n".join(mediated_lines))
 
         # [Current Request]
         parts.append(f"[Current Request]\n{task.strip()}")

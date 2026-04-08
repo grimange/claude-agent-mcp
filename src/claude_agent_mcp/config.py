@@ -29,6 +29,12 @@ Continuation window policy variables (v0.7.0):
   CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_VERIFICATION_CONTEXT       — Include verification outcomes in continuation (default: true)
   CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_TOOL_DOWNGRADE_CONTEXT     — Include tool downgrade warnings in continuation (default: true)
 
+Execution mediation variables (v0.8.0):
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION              — Enable execution mediation (default: false)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_ACTIONS_PER_TURN           — Max mediated actions per turn (default: 1)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_ACTION_TYPES           — Comma-separated allowed types: read,lookup,inspect (default: all supported)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION — Include mediated results in continuation context (default: false)
+
 Federation variables (v0.3):
   CLAUDE_AGENT_MCP_FEDERATION_ENABLED   — Enable downstream federation (default: false)
   CLAUDE_AGENT_MCP_FEDERATION_CONFIG    — Path to JSON federation config file
@@ -171,6 +177,36 @@ class Config:
         ).strip().lower()
         self.claude_code_include_tool_downgrade_context: bool = (
             claude_code_include_tool_downgrade_context_raw in {"true", "1", "yes"}
+        )
+
+        # Execution mediation (v0.8.0) — disabled by default, conservative values
+        claude_code_enable_mediation_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION", default="false"
+        ).strip().lower()
+        self.claude_code_enable_execution_mediation: bool = (
+            claude_code_enable_mediation_raw in {"true", "1", "yes"}
+        )
+
+        self.claude_code_max_mediated_actions_per_turn: int = int(
+            _env(
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_ACTIONS_PER_TURN", default="1"
+            ).strip()
+        )
+
+        allowed_mediated_types_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_ACTION_TYPES", default=""
+        ).strip()
+        self.claude_code_allowed_mediated_action_types: list[str] = (
+            [t.strip() for t in allowed_mediated_types_raw.split(",") if t.strip()]
+            if allowed_mediated_types_raw else []
+        )
+
+        claude_code_include_mediated_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION",
+            default="false",
+        ).strip().lower()
+        self.claude_code_include_mediated_results_in_continuation: bool = (
+            claude_code_include_mediated_raw in {"true", "1", "yes"}
         )
 
         # --- Federation (v0.3) ---

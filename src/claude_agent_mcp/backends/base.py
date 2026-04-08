@@ -53,6 +53,12 @@ class BackendCapabilities:
     supports_continuation_window_policy: bool = False
     """Backend respects a configurable ContinuationWindowPolicy for bounded reconstruction (v0.7.0)."""
 
+    supports_execution_mediation: bool = False
+    """Backend output can contain bounded mediated action requests processed by the runtime (v0.8.0)."""
+
+    supports_mediated_action_results: bool = False
+    """Backend supports inclusion of mediated action results in continuation context (v0.8.0)."""
+
 
 class ExecutionBackend(ABC):
     """Pluggable execution backend interface.
