@@ -35,6 +35,14 @@ Execution mediation variables (v0.8.0):
   CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_ACTION_TYPES           — Comma-separated allowed types: read,lookup,inspect (default: all supported)
   CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION — Include mediated results in continuation context (default: false)
 
+Bounded workflow mediation variables (v0.9.0):
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_WORKFLOW_STEPS             — Max steps per workflow request (default: 1)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_TOOLS                  — Comma-separated allowed tool names (default: all visible)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_DENIED_MEDIATED_TOOLS                   — Comma-separated denied tool names (default: none)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS          — Max total mediated approvals per session (default: 100)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_REJECTED_MEDIATION_IN_CONTINUATION — Include rejected step summaries in continuation (default: false)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_MEDIATION_POLICY_PROFILE                — Named policy profile (default: conservative)
+
 Federation variables (v0.3):
   CLAUDE_AGENT_MCP_FEDERATION_ENABLED   — Enable downstream federation (default: false)
   CLAUDE_AGENT_MCP_FEDERATION_CONFIG    — Path to JSON federation config file
@@ -208,6 +216,47 @@ class Config:
         self.claude_code_include_mediated_results_in_continuation: bool = (
             claude_code_include_mediated_raw in {"true", "1", "yes"}
         )
+
+        # Bounded workflow mediation (v0.9.0) — additive, conservative defaults
+        self.claude_code_max_mediated_workflow_steps: int = int(
+            _env(
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_WORKFLOW_STEPS", default="1"
+            ).strip()
+        )
+
+        allowed_mediated_tools_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_TOOLS", default=""
+        ).strip()
+        self.claude_code_allowed_mediated_tools: list[str] = (
+            [t.strip() for t in allowed_mediated_tools_raw.split(",") if t.strip()]
+            if allowed_mediated_tools_raw else []
+        )
+
+        denied_mediated_tools_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_DENIED_MEDIATED_TOOLS", default=""
+        ).strip()
+        self.claude_code_denied_mediated_tools: list[str] = (
+            [t.strip() for t in denied_mediated_tools_raw.split(",") if t.strip()]
+            if denied_mediated_tools_raw else []
+        )
+
+        self.claude_code_max_session_mediated_approvals: int = int(
+            _env(
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS", default="100"
+            ).strip()
+        )
+
+        claude_code_include_rejected_mediation_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_REJECTED_MEDIATION_IN_CONTINUATION",
+            default="false",
+        ).strip().lower()
+        self.claude_code_include_rejected_mediation_in_continuation: bool = (
+            claude_code_include_rejected_mediation_raw in {"true", "1", "yes"}
+        )
+
+        self.claude_code_mediation_policy_profile: str = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_MEDIATION_POLICY_PROFILE", default="conservative"
+        ).strip()
 
         # --- Federation (v0.3) ---
         federation_enabled_raw = _env(

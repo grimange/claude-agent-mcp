@@ -34,15 +34,22 @@ from claude_agent_mcp.runtime.continuation_builder import ContinuationContextBui
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
 from claude_agent_mcp.runtime.profile_registry import Profile, ProfileRegistry
 from claude_agent_mcp.runtime.session_store import SessionStore
-from claude_agent_mcp.runtime.mediation_engine import MediationEngine
+from claude_agent_mcp.runtime.mediation_engine import (
+    MediationEngine,
+    POLICY_APPROVED,
+)
 from claude_agent_mcp.types import (
     AgentResponse,
     ArtifactReference,
     ContinueSessionRequest,
     ErrorObject,
     EventType,
+    MediatedActionRequest,
     MediatedActionResult,
     MediatedActionStatus,
+    MediatedWorkflowRequest,
+    MediatedWorkflowResult,
+    MediatedWorkflowStepResult,
     NormalizedProviderResult,
     NormalizedVerificationResult,
     ProfileName,
@@ -919,8 +926,31 @@ class WorkflowExecutor:
         return _executor
 
     # ------------------------------------------------------------------
-    # Execution mediation (v0.8.0)
+    # Execution mediation (v0.8.0/v0.9.0)
     # ------------------------------------------------------------------
+
+    async def _count_session_approvals(self, session_id: str) -> int:
+        """Count all mediated approvals persisted for this session so far (v0.9.0).
+
+        Used to enforce session-level approval limits across turns.
+        Counts both single-action (v0.8.0) and workflow step (v0.9.0) approval events.
+
+        Args:
+            session_id: The session to count approvals for.
+
+        Returns:
+            Total count of mediated_action_approved + mediated_workflow_step_approved events.
+        """
+        try:
+            events = await self._sessions.get_events(session_id)
+        except Exception:
+            return 0
+
+        approval_types = {
+            EventType.mediated_action_approved,
+            EventType.mediated_workflow_step_approved,
+        }
+        return sum(1 for e in events if e.event_type in approval_types)
 
     async def _process_mediated_actions(
         self,
@@ -930,11 +960,14 @@ class WorkflowExecutor:
         turn_index: int,
         invoker: DownstreamToolInvoker | None,
     ) -> list[MediatedActionResult]:
-        """Parse, validate, and execute mediated action requests from backend output.
+        """Parse, validate, and execute mediated action and workflow requests from backend output.
 
-        Called after each backend execution. Only runs if the backend declares
-        supports_execution_mediation. Returns all results (approved+executed,
-        approved+failed, rejected) for caller to emit warnings and persist events.
+        Called after each backend execution. Handles both v0.8.0 single-action request
+        blocks and v0.9.0 bounded workflow request blocks. Only runs if the backend
+        declares supports_execution_mediation.
+
+        Returns all results (approved+executed, approved+failed, rejected) for the
+        caller to emit warnings and persist events.
 
         Args:
             output_text: Raw backend output text to parse requests from.
@@ -945,108 +978,420 @@ class WorkflowExecutor:
                      When None, all requests requiring federation are rejected.
 
         Returns:
-            List of MediatedActionResult objects for all parsed requests.
+            List of MediatedActionResult objects for all parsed requests
+            (from both single-action and workflow formats).
         """
         caps = self._backend.capabilities
         if not getattr(caps, "supports_execution_mediation", False):
             return []
 
-        requests = self._mediation.parse_requests(output_text)
-        if not requests:
-            return []
+        # Count session-level approvals from prior turns for limit enforcement (v0.9.0).
+        session_approved_total = await self._count_session_approvals(session_id)
 
-        results: list[MediatedActionResult] = []
+        all_results: list[MediatedActionResult] = []
         actions_approved_this_turn = 0
 
-        for req in requests:
-            # Persist: action requested
+        # --- v0.8.0: process single-action request blocks ---
+        single_action_requests = self._mediation.parse_requests(output_text)
+        for req in single_action_requests:
+            result = await self._process_single_action(
+                req=req,
+                session_id=session_id,
+                profile_name=profile_name,
+                turn_index=turn_index,
+                invoker=invoker,
+                actions_approved_this_turn=actions_approved_this_turn,
+                session_approved_total=session_approved_total,
+            )
+            all_results.append(result)
+            if result.status == MediatedActionStatus.approved or result.status == MediatedActionStatus.completed:
+                actions_approved_this_turn += 1
+
+        # --- v0.9.0: process bounded workflow request blocks ---
+        if getattr(caps, "supports_bounded_mediated_workflows", False):
+            workflows = self._mediation.parse_workflow(output_text)
+            for wf in workflows:
+                wf_results = await self._process_workflow(
+                    workflow=wf,
+                    session_id=session_id,
+                    profile_name=profile_name,
+                    turn_index=turn_index,
+                    invoker=invoker,
+                    actions_approved_this_turn=actions_approved_this_turn,
+                    session_approved_total=session_approved_total,
+                )
+                for step_result in wf_results.step_results:
+                    all_results.append(step_result.action_result)
+                    if step_result.action_result.status in (
+                        MediatedActionStatus.approved,
+                        MediatedActionStatus.completed,
+                    ):
+                        actions_approved_this_turn += 1
+
+        return all_results
+
+    async def _process_single_action(
+        self,
+        req: "MediatedActionRequest",
+        session_id: str,
+        profile_name: str,
+        turn_index: int,
+        invoker: DownstreamToolInvoker | None,
+        actions_approved_this_turn: int,
+        session_approved_total: int,
+    ) -> MediatedActionResult:
+        """Process a single v0.8.0 mediated action request end-to-end.
+
+        Persists requested → (approved|rejected) → completed events.
+        Returns the final MediatedActionResult.
+        """
+
+        # Persist: action requested
+        await self._sessions.append_event(
+            session_id,
+            EventType.mediated_action_requested,
+            turn_index,
+            {
+                "request_id": req.request_id,
+                "action_type": req.action_type.value,
+                "target_tool": req.target_tool,
+                "justification": req.justification[:200],
+                "mediation_version": req.mediation_version,
+            },
+        )
+
+        is_approved, policy_decision = self._mediation.validate_request(
+            req,
+            profile_name,
+            actions_approved_this_turn,
+            session_approved_total=session_approved_total,
+        )
+
+        if not is_approved:
+            result = self._mediation.make_rejection_result(req, policy_decision)
             await self._sessions.append_event(
                 session_id,
-                EventType.mediated_action_requested,
+                EventType.mediated_action_rejected,
                 turn_index,
                 {
                     "request_id": req.request_id,
-                    "action_type": req.action_type.value,
                     "target_tool": req.target_tool,
-                    "justification": req.justification[:200],
-                    "mediation_version": req.mediation_version,
+                    "policy_decision": policy_decision,
+                    "failure_reason": result.failure_reason,
+                },
+            )
+            logger.info(
+                "Mediated action %r rejected: %s", req.request_id, policy_decision
+            )
+            return result
+
+        # Persist: action approved
+        await self._sessions.append_event(
+            session_id,
+            EventType.mediated_action_approved,
+            turn_index,
+            {
+                "request_id": req.request_id,
+                "target_tool": req.target_tool,
+                "action_type": req.action_type.value,
+                "policy_decision": policy_decision,
+            },
+        )
+
+        # Execute the approved action.
+        if invoker is None:
+            logger.error(
+                "mediation: invoker is None for approved action %r — this is a bug",
+                req.request_id,
+            )
+            result = self._mediation.make_rejection_result(
+                req, "rejected:internal_invoker_unavailable"
+            )
+            return result
+
+        result = await self._mediation.execute_action(req, invoker, session_id, turn_index)
+
+        # Persist: action completed (or failed)
+        await self._sessions.append_event(
+            session_id,
+            EventType.mediated_action_completed,
+            turn_index,
+            {
+                "request_id": req.request_id,
+                "target_tool": req.target_tool,
+                "status": result.status.value,
+                "arguments_summary": result.arguments_summary,
+                "result_summary": result.result_summary[:200],
+                "failure_reason": result.failure_reason,
+                "policy_decision": result.policy_decision,
+            },
+        )
+        return result
+
+    async def _process_workflow(
+        self,
+        workflow: "MediatedWorkflowRequest",
+        session_id: str,
+        profile_name: str,
+        turn_index: int,
+        invoker: DownstreamToolInvoker | None,
+        actions_approved_this_turn: int,
+        session_approved_total: int,
+    ) -> MediatedWorkflowResult:
+        """Process a v0.9.0 bounded mediated workflow request end-to-end.
+
+        Emits workflow-level events (requested, completed) and per-step events
+        (step_requested, step_approved/rejected, step_completed).
+
+        Each step is individually validated. A rejected step does not stop
+        subsequent step processing (each step fails independently).
+
+        Args:
+            workflow: The parsed MediatedWorkflowRequest.
+            session_id: Active session identifier.
+            profile_name: Active profile name.
+            turn_index: Current turn index.
+            invoker: Federation invoker for approved steps.
+            actions_approved_this_turn: Approvals in the current turn so far.
+            session_approved_total: Session-level approval count from prior turns.
+
+        Returns:
+            MediatedWorkflowResult with per-step results and aggregate counts.
+        """
+        # Emit workflow-level requested event.
+        await self._sessions.append_event(
+            session_id,
+            EventType.mediated_workflow_requested,
+            turn_index,
+            {
+                "workflow_id": workflow.workflow_id,
+                "step_count": len(workflow.steps),
+                "mediation_version": workflow.mediation_version,
+                "justification": workflow.justification[:200],
+            },
+        )
+
+        # Validate workflow-level constraints first.
+        wf_ok, wf_policy = self._mediation.validate_workflow_request(workflow)
+        if not wf_ok:
+            # All steps rejected at the workflow level.
+            step_results: list[MediatedWorkflowStepResult] = []
+            rejection_reason = self._mediation.rejection_reason_enum(wf_policy)
+            for step in workflow.steps:
+                dummy_req = self._mediation.step_to_action_request(step, workflow.mediation_version)
+                action_result = self._mediation.make_rejection_result(dummy_req, wf_policy)
+                step_results.append(MediatedWorkflowStepResult(
+                    step_index=step.step_index,
+                    action_result=action_result,
+                    rejection_reason=rejection_reason,
+                ))
+                await self._sessions.append_event(
+                    session_id,
+                    EventType.mediated_workflow_step_rejected,
+                    turn_index,
+                    {
+                        "workflow_id": workflow.workflow_id,
+                        "step_index": step.step_index,
+                        "target_tool": step.target_tool,
+                        "policy_decision": wf_policy,
+                        "rejection_reason": rejection_reason.value,
+                    },
+                )
+                logger.info(
+                    "Workflow %r step %d rejected at workflow level: %s",
+                    workflow.workflow_id,
+                    step.step_index,
+                    wf_policy,
+                )
+
+            wf_result = MediatedWorkflowResult(
+                workflow_id=workflow.workflow_id,
+                total_steps=len(workflow.steps),
+                approved_steps=0,
+                rejected_steps=len(workflow.steps),
+                completed_steps=0,
+                failed_steps=0,
+                step_results=step_results,
+            )
+            await self._sessions.append_event(
+                session_id,
+                EventType.mediated_workflow_completed,
+                turn_index,
+                {
+                    "workflow_id": workflow.workflow_id,
+                    "total_steps": wf_result.total_steps,
+                    "approved_steps": wf_result.approved_steps,
+                    "rejected_steps": wf_result.rejected_steps,
+                    "completed_steps": wf_result.completed_steps,
+                    "failed_steps": wf_result.failed_steps,
+                },
+            )
+            return wf_result
+
+        # Process each step individually.
+        step_results = []
+        step_approved = 0
+        step_rejected = 0
+        step_completed = 0
+        step_failed = 0
+        step_actions_approved = actions_approved_this_turn  # track within this workflow
+
+        for step in workflow.steps:
+            req = self._mediation.step_to_action_request(step, workflow.mediation_version)
+
+            # Emit step_requested event.
+            await self._sessions.append_event(
+                session_id,
+                EventType.mediated_workflow_step_requested,
+                turn_index,
+                {
+                    "workflow_id": workflow.workflow_id,
+                    "step_index": step.step_index,
+                    "action_type": step.action_type.value,
+                    "target_tool": step.target_tool,
+                    "justification": step.justification[:200],
                 },
             )
 
             is_approved, policy_decision = self._mediation.validate_request(
-                req, profile_name, actions_approved_this_turn
+                req,
+                profile_name,
+                step_actions_approved,
+                session_approved_total=session_approved_total,
             )
 
             if not is_approved:
-                # Persist: action rejected
-                result = self._mediation.make_rejection_result(req, policy_decision)
+                rejection_reason = self._mediation.rejection_reason_enum(policy_decision)
+                action_result = self._mediation.make_rejection_result(req, policy_decision)
                 await self._sessions.append_event(
                     session_id,
-                    EventType.mediated_action_rejected,
+                    EventType.mediated_workflow_step_rejected,
                     turn_index,
                     {
-                        "request_id": req.request_id,
-                        "target_tool": req.target_tool,
+                        "workflow_id": workflow.workflow_id,
+                        "step_index": step.step_index,
+                        "target_tool": step.target_tool,
                         "policy_decision": policy_decision,
-                        "failure_reason": result.failure_reason,
+                        "rejection_reason": rejection_reason.value,
+                        "failure_reason": action_result.failure_reason,
                     },
                 )
                 logger.info(
-                    "Mediated action %r rejected: %s", req.request_id, policy_decision
+                    "Workflow %r step %d rejected: %s",
+                    workflow.workflow_id,
+                    step.step_index,
+                    policy_decision,
                 )
-                results.append(result)
+                step_results.append(MediatedWorkflowStepResult(
+                    step_index=step.step_index,
+                    action_result=action_result,
+                    rejection_reason=rejection_reason,
+                ))
+                step_rejected += 1
                 continue
 
-            # Persist: action approved
+            # Emit step_approved event.
             await self._sessions.append_event(
                 session_id,
-                EventType.mediated_action_approved,
+                EventType.mediated_workflow_step_approved,
                 turn_index,
                 {
-                    "request_id": req.request_id,
-                    "target_tool": req.target_tool,
-                    "action_type": req.action_type.value,
+                    "workflow_id": workflow.workflow_id,
+                    "step_index": step.step_index,
+                    "target_tool": step.target_tool,
+                    "action_type": step.action_type.value,
                     "policy_decision": policy_decision,
                 },
             )
-            actions_approved_this_turn += 1
+            step_approved += 1
+            step_actions_approved += 1
 
-            # Execute the approved action.
-            # invoker must be non-None here: validate_request rejects when
-            # visibility_resolver is None, and invoker is None iff visibility_resolver is None.
+            # Execute the approved step.
             if invoker is None:
                 logger.error(
-                    "mediation: invoker is None for approved action %r — this is a bug",
-                    req.request_id,
+                    "mediation: invoker is None for approved workflow %r step %d — this is a bug",
+                    workflow.workflow_id,
+                    step.step_index,
                 )
-                result = self._mediation.make_rejection_result(
+                action_result = self._mediation.make_rejection_result(
                     req, "rejected:internal_invoker_unavailable"
                 )
-                results.append(result)
+                step_results.append(MediatedWorkflowStepResult(
+                    step_index=step.step_index,
+                    action_result=action_result,
+                    rejection_reason=None,
+                ))
+                step_failed += 1
                 continue
 
-            result = await self._mediation.execute_action(
+            action_result = await self._mediation.execute_action(
                 req, invoker, session_id, turn_index
             )
 
-            # Persist: action completed (or failed)
+            # Emit step_completed event.
             await self._sessions.append_event(
                 session_id,
-                EventType.mediated_action_completed,
+                EventType.mediated_workflow_step_completed,
                 turn_index,
                 {
-                    "request_id": req.request_id,
-                    "target_tool": req.target_tool,
-                    "status": result.status.value,
-                    "arguments_summary": result.arguments_summary,
-                    "result_summary": result.result_summary[:200],
-                    "failure_reason": result.failure_reason,
-                    "policy_decision": result.policy_decision,
+                    "workflow_id": workflow.workflow_id,
+                    "step_index": step.step_index,
+                    "target_tool": step.target_tool,
+                    "status": action_result.status.value,
+                    "arguments_summary": action_result.arguments_summary,
+                    "result_summary": action_result.result_summary[:200],
+                    "failure_reason": action_result.failure_reason,
+                    "policy_decision": action_result.policy_decision,
                 },
             )
-            results.append(result)
 
-        return results
+            step_results.append(MediatedWorkflowStepResult(
+                step_index=step.step_index,
+                action_result=action_result,
+                rejection_reason=None,
+            ))
+
+            if action_result.status == MediatedActionStatus.completed:
+                step_completed += 1
+            else:
+                step_failed += 1
+
+        wf_result = MediatedWorkflowResult(
+            workflow_id=workflow.workflow_id,
+            total_steps=len(workflow.steps),
+            approved_steps=step_approved,
+            rejected_steps=step_rejected,
+            completed_steps=step_completed,
+            failed_steps=step_failed,
+            step_results=step_results,
+        )
+
+        # Emit workflow-level completed event with aggregate stats.
+        await self._sessions.append_event(
+            session_id,
+            EventType.mediated_workflow_completed,
+            turn_index,
+            {
+                "workflow_id": workflow.workflow_id,
+                "total_steps": wf_result.total_steps,
+                "approved_steps": wf_result.approved_steps,
+                "rejected_steps": wf_result.rejected_steps,
+                "completed_steps": wf_result.completed_steps,
+                "failed_steps": wf_result.failed_steps,
+            },
+        )
+
+        logger.info(
+            "Workflow %r completed: %d/%d steps approved, %d completed, %d rejected, %d failed",
+            workflow.workflow_id,
+            wf_result.approved_steps,
+            wf_result.total_steps,
+            wf_result.completed_steps,
+            wf_result.rejected_steps,
+            wf_result.failed_steps,
+        )
+
+        return wf_result
 
     def _error_response(
         self,

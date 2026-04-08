@@ -1,4 +1,4 @@
-"""Claude Code execution backend for claude-agent-mcp (v0.5/v0.6/v0.7.0/v0.8.0).
+"""Claude Code execution backend for claude-agent-mcp (v0.5/v0.6/v0.7.0/v0.8.0/v0.9.0).
 
 Executes tasks through the Claude Code CLI rather than direct API calls.
 This allows operators who have Claude Code installed (and authenticated via
@@ -25,6 +25,8 @@ Capabilities (v0.5/v0.6/v0.7.0/v0.8.0):
     - supports_continuation_window_policy: True — respects ContinuationWindowPolicy (v0.7.0).
     - supports_execution_mediation: True — output may contain mediated action requests (v0.8.0).
     - supports_mediated_action_results: True — mediated results can be summarized in continuation (v0.8.0).
+    - supports_bounded_mediated_workflows: True — output may contain bounded multi-step workflow requests (v0.9.0).
+    - supports_mediation_policy_profiles: True — richer mediation policy profile enforcement (v0.9.0).
 
 Context reconstruction (v0.5):
     Continuation history is rendered in a structured format with clear role
@@ -160,7 +162,7 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
 
     @property
     def capabilities(self) -> BackendCapabilities:
-        """Declare claude_code backend capabilities (v0.5/v0.6/v0.7.0/v0.8.0)."""
+        """Declare claude_code backend capabilities (v0.5/v0.6/v0.7.0/v0.8.0/v0.9.0)."""
         return BackendCapabilities(
             supports_downstream_tools=False,
             supports_structured_tool_use=False,
@@ -173,6 +175,8 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
             supports_continuation_window_policy=True,
             supports_execution_mediation=True,
             supports_mediated_action_results=True,
+            supports_bounded_mediated_workflows=True,
+            supports_mediation_policy_profiles=True,
         )
 
     def _find_cli(self) -> str | None:
@@ -501,15 +505,17 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
                 constraint_lines.append(f"{key}: {value}")
             parts.append("\n".join(constraint_lines))
 
-        # [Mediated Execution Context] — v0.8.0: prior mediated action results (when present)
+        # [Mediated Execution Context] — v0.8.0/v0.9.0: prior mediated action/workflow results
         mediated_summaries = getattr(continuation_context, "mediated_action_summaries", [])
-        if mediated_summaries:
+        workflow_summaries = getattr(continuation_context, "mediated_workflow_summaries", [])
+        all_mediated = list(mediated_summaries) + list(workflow_summaries)
+        if all_mediated:
             mediated_lines: list[str] = [
                 "[Mediated Execution Context]",
                 "The following tool actions were executed by the runtime on your behalf "
                 "during prior turns:",
             ]
-            for summary in mediated_summaries:
+            for summary in all_mediated:
                 mediated_lines.append(f"- {summary}")
             mediated_lines.append(
                 "Note: These were runtime-mediated actions — not native tool calls."

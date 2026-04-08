@@ -793,13 +793,15 @@ class TestBuildContextWithMediatedSummaries:
         ctx = ContinuationContextBuilder.build_context(session, events, policy, config=None)
         assert ctx.mediated_action_summaries == []
 
-    def test_reconstruction_version_is_v080(self):
-        """v0.8.0 continuation context uses the updated reconstruction version."""
+    def test_reconstruction_version_is_current(self):
+        """Continuation context uses the current reconstruction version (bumped in v0.9.0)."""
         session = _make_session()
         events = []
         policy = ContinuationWindowPolicy()
         ctx = ContinuationContextBuilder.build_context(session, events, policy)
-        assert ctx.reconstruction_version == "v0.8.0"
+        # Version bumped to v0.9.0 — value must match the module constant
+        from claude_agent_mcp.runtime.continuation_builder import _RECONSTRUCTION_VERSION
+        assert ctx.reconstruction_version == _RECONSTRUCTION_VERSION
 
 
 # ---------------------------------------------------------------------------

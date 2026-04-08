@@ -7,6 +7,162 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.9.0] — 2026-04-08
+
+### Mediation hardening and bounded workflow expansion track release
+
+This release hardens the v0.8.0 execution mediation layer with stronger policy controls,
+richer rejection diagnostics, bounded multi-step workflow support, improved continuation
+treatment for mediated results, and full per-step audit observability.
+
+The runtime remains the approving authority for every mediated step.
+No open-ended or autonomous execution chains are introduced.
+All external MCP tool contracts and response envelopes are unchanged.
+The `api` backend is unaffected.
+
+### Added
+
+- **`MediatedWorkflowRequest` model** (`types.py`) — bounded ordered workflow of mediated
+  action steps. Fields: `mediation_version` (`"v0.9.0"`), `workflow_id`, `steps`, `justification`.
+  Parsed from `<mediated_workflow_request>` blocks in backend output via `parse_workflow()`.
+- **`MediatedWorkflowStep` model** (`types.py`) — single step within a bounded workflow.
+  Fields: `step_index`, `action_type`, `target_tool`, `arguments`, `justification`.
+  Each step is individually validated before execution.
+- **`MediatedWorkflowResult` model** (`types.py`) — aggregate result for a completed
+  workflow. Fields: `workflow_id`, `total_steps`, `approved_steps`, `rejected_steps`,
+  `completed_steps`, `failed_steps`, `step_results`.
+- **`MediatedWorkflowStepResult` model** (`types.py`) — per-step result wrapping a
+  `MediatedActionResult` with an optional `rejection_reason` enum value.
+- **`MediationPolicyProfile` model** (`types.py`) — aggregated, operator-inspectable
+  policy object. Built from config by `MediationEngine.build_policy_profile()`. Fields:
+  `name`, `allowed_action_types`, `allowed_tools`, `denied_tools`, `max_steps_per_turn`,
+  `max_approvals_per_session`, `continuation_inclusion_mode`, `mixed_action_types_allowed`.
+- **`MediationRejectionReason` enum** (`types.py`) — 10 normalized rejection reason codes:
+  `feature_disabled`, `invalid_version`, `unsupported_action_type`, `per_turn_limit_exceeded`,
+  `workflow_step_limit_exceeded`, `session_approval_limit_exceeded`, `federation_inactive`,
+  `tool_not_visible`, `tool_not_allowed`, `malformed_request`. Each rejection event now
+  includes a stable machine-readable reason code — no free-text parsing needed.
+- **`MediationContinuationInclusionMode` enum** (`types.py`) — controls how mediated results
+  appear in continuation context. Values: `approved_only` (default), `all_steps`, `none`.
+- **Six new `EventType` values** (`types.py`) — full per-step audit trail for bounded
+  workflows: `mediated_workflow_requested`, `mediated_workflow_step_requested`,
+  `mediated_workflow_step_approved`, `mediated_workflow_step_rejected`,
+  `mediated_workflow_step_completed`, `mediated_workflow_completed`. The
+  `mediated_workflow_completed` payload includes aggregate step counts for operator dashboards.
+- **`mediated_workflow_summaries` field** on `SessionContinuationContext` (`types.py`) —
+  compact summaries of bounded workflow step results from prior turns. Default `[]`.
+  Populated by `ContinuationContextBuilder` when `include_mediated_results_in_continuation`
+  is enabled.
+- **`parse_workflow()` method** (`mediation_engine.py`) — parses `<mediated_workflow_request>`
+  blocks using a strict deterministic regex pattern. Skips malformed blocks with WARNING logs;
+  no silent degradation. Each step is fully validated before the workflow is accepted.
+- **`validate_workflow_request()` method** (`mediation_engine.py`) — checks workflow-level
+  constraints (mediation enabled, version matches `"v0.9.0"`, step count within
+  `claude_code_max_mediated_workflow_steps`). Returns `(bool, policy_decision_code)`.
+- **`step_to_action_request()` method** (`mediation_engine.py`) — converts a
+  `MediatedWorkflowStep` to a `MediatedActionRequest` for individual step validation via
+  the existing `validate_request()` gate chain.
+- **`rejection_reason_enum()` method** (`mediation_engine.py`) — maps any policy decision
+  code to a `MediationRejectionReason` enum value. Unknown codes fall back to `malformed_request`.
+- **`build_policy_profile()` method** (`mediation_engine.py`) — builds a `MediationPolicyProfile`
+  from the current config. Logged with mediation decisions for operator audit.
+- **`_process_single_action()` helper** (`workflow_executor.py`) — extracted and extended
+  version of v0.8.0 mediation processing, now accepts `session_approved_total` for
+  session-level limit enforcement.
+- **`_process_workflow()` helper** (`workflow_executor.py`) — full bounded workflow
+  execution: validates at workflow level, then per-step; emits all six workflow event types;
+  builds `MediatedWorkflowResult` with aggregate counts.
+- **`_count_session_approvals()` helper** (`workflow_executor.py`) — counts
+  `mediated_action_approved` and `mediated_workflow_step_approved` events from the session
+  store to enforce session-level approval limits across turns.
+- **`_extract_workflow_summaries()` static method** (`continuation_builder.py`) — derives
+  compact summary strings from `mediated_workflow_step_completed` and
+  `mediated_workflow_step_rejected` events. Rejected step summaries included only when
+  `claude_code_include_rejected_mediation_in_continuation=true`.
+- **Two new capability flags** (`backends/base.py`) — `supports_bounded_mediated_workflows`
+  (default `False`) and `supports_mediation_policy_profiles` (default `False`).
+  `claude_code` backend declares both `True`.
+- **Six new config fields** (`config.py`) — all conservative defaults:
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_WORKFLOW_STEPS` (int, default `1`)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_TOOLS` (comma-separated, default all visible)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_DENIED_MEDIATED_TOOLS` (comma-separated, default none denied)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS` (int, default `100`)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_REJECTED_MEDIATION_IN_CONTINUATION` (bool, default `false`)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_MEDIATION_POLICY_PROFILE` (str, default `"conservative"`)
+- **Tests** — `tests/test_v09_mediation.py` (93 new tests) covering: new type models and
+  enums, all config fields, capability flags, `parse_workflow()` (valid, malformed, missing
+  fields, empty steps, unknown action type), `validate_workflow_request()` (all rejection
+  paths), `validate_request()` new gates (session limit, tool allow/deny, combined counts),
+  `step_to_action_request()`, `rejection_reason_enum()` (all codes), `build_policy_profile()`,
+  `_extract_workflow_summaries()` (enabled/disabled, rejected inclusion), `_extract_mediated_summaries()`
+  rejected-step inclusion, `_count_session_approvals()`, full `_process_mediated_actions()` workflow
+  path (approval, tool-denied rejection, step-limit rejection, session-limit rejection, aggregate
+  stats), v0.8.0 regression, `[Mediated Execution Context]` with workflow summaries.
+  Total test count: 457 (up from 364).
+- **Docs** — `docs/claude-code-backend.md` and `docs/backend-capability-matrix.md` updated
+  to v0.9.0 with bounded workflow format reference, extended validation gate table with
+  rejection reason enum, per-step event table, policy profile description, updated capability
+  matrix, updated version notes, and explicit preserved-limitations section.
+
+### Changed
+
+- **`validate_request()`** (`mediation_engine.py`) — accepts new optional
+  `session_approved_total: int = 0` parameter. Adds two new gates after the per-turn limit
+  gate: session-level approval count check (`rejected:session_approval_limit_exceeded`) and
+  tool allow/deny list enforcement (`rejected:tool_not_allowed`). Both gates are backward
+  compatible — default config values leave existing behavior unchanged.
+- **`_process_mediated_actions()`** (`workflow_executor.py`) — now routes to both
+  `_process_single_action()` (v0.8.0 format) and `_process_workflow()` (v0.9.0 format).
+  Fetches session-level approval count from persisted events at the start of each call.
+  Workflow parsing only runs when `supports_bounded_mediated_workflows` is `True`.
+- **`_extract_mediated_summaries()`** (`continuation_builder.py`) — extended to include
+  `mediated_action_rejected` event summaries when
+  `claude_code_include_rejected_mediation_in_continuation=true`. Existing behavior
+  (rejected events excluded) is preserved as the default.
+- **`ContinuationContextBuilder.build_context()`** (`continuation_builder.py`) — populates
+  the new `mediated_workflow_summaries` field on `SessionContinuationContext`.
+- **`_build_continuation_prompt()`** (`claude_code_backend.py`) — `[Mediated Execution
+  Context]` section now renders both `mediated_action_summaries` and
+  `mediated_workflow_summaries` combined. Section still omitted when both lists are empty.
+- **`_RECONSTRUCTION_VERSION`** (`continuation_builder.py`) — bumped from `"v0.8.0"` to
+  `"v0.9.0"`. `SessionContinuationContext.reconstruction_version` default updated accordingly.
+- **`WORKFLOW_MEDIATION_VERSION`** and **`SUPPORTED_MEDIATION_VERSIONS`** added to
+  `mediation_engine.py`. `MEDIATION_VERSION = "v0.8.0"` preserved unchanged for
+  single-action format compatibility.
+
+### New validation gates (v0.9.0 additions, in gate order)
+
+| Gate | Rejection code | `MediationRejectionReason` |
+|---|---|---|
+| `claude_code_enable_execution_mediation` is `true` | `rejected:mediation_disabled` | `feature_disabled` |
+| `mediation_version` in supported versions | `rejected:unsupported_mediation_version` | `invalid_version` |
+| `action_type` is in allowed set | `rejected:action_type_not_allowed` | `unsupported_action_type` |
+| Per-turn count < `max_mediated_actions_per_turn` | `rejected:per_turn_action_limit_exceeded` | `per_turn_limit_exceeded` |
+| Session total < `max_session_mediated_approvals` **(new)** | `rejected:session_approval_limit_exceeded` | `session_approval_limit_exceeded` |
+| `target_tool` not in denied list **(new)** | `rejected:tool_not_allowed` | `tool_not_allowed` |
+| `target_tool` in allowed list, if set **(new)** | `rejected:tool_not_allowed` | `tool_not_allowed` |
+| Federation is active | `rejected:federation_inactive` | `federation_inactive` |
+| `target_tool` visible for active profile | `rejected:tool_not_visible` | `tool_not_visible` |
+
+### Backend capability declarations (v0.9.0)
+
+| Capability | `api` | `claude_code` |
+|---|---|---|
+| `supports_execution_mediation` | No | **Yes** (v0.8.0) |
+| `supports_mediated_action_results` | No | **Yes** (v0.8.0) |
+| `supports_bounded_mediated_workflows` | No | **Yes** (v0.9.0, new) |
+| `supports_mediation_policy_profiles` | No | **Yes** (v0.9.0, new) |
+
+### Preserved limitations
+
+- No native `tool_use`/`tool_result` loop in Claude Code mode
+- No streaming transport
+- No cross-backend session migration
+- No broad autonomous or self-directed execution chains
+- Mediated execution still requires active federation
+
+---
+
 ## [0.8.0] — 2026-04-08
 
 ### Claude Code execution mediation track release

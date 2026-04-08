@@ -1,4 +1,4 @@
-# Claude Code Backend (v0.8.0)
+# Claude Code Backend (v0.9.0)
 
 ## Overview
 
@@ -48,6 +48,14 @@ export CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION=false
 export CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_ACTIONS_PER_TURN=1
 export CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_ACTION_TYPES=   # default: all (read,lookup,inspect)
 export CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION=false
+
+# Optional (v0.9.0): bounded workflow mediation (all conservative defaults)
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_WORKFLOW_STEPS=1         # max steps per workflow
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_ALLOWED_MEDIATED_TOOLS=               # default: all visible tools
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_DENIED_MEDIATED_TOOLS=                # default: none denied
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS=100    # total per session
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_REJECTED_MEDIATION_IN_CONTINUATION=false
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_MEDIATION_POLICY_PROFILE=conservative
 ```
 
 Do not set `ANTHROPIC_API_KEY` when using the Claude Code backend. The backend does not use it.
@@ -66,7 +74,7 @@ Authentication state is **not** verified at startup. An unauthenticated Claude C
 
 ---
 
-## How execution works (v0.8.0)
+## How execution works (v0.9.0)
 
 For each task, the Claude Code backend:
 
@@ -223,7 +231,7 @@ These events are visible via `agent_get_session` detail and the internal session
 
 ---
 
-## Backend capabilities (v0.8.0)
+## Backend capabilities (v0.9.0)
 
 The Claude Code backend declares the following capability profile:
 
@@ -240,12 +248,14 @@ The Claude Code backend declares the following capability profile:
 | `supports_continuation_window_policy` | Yes | Respects `ContinuationWindowPolicy` bounds (v0.7.0) |
 | `supports_execution_mediation` | Yes | Output may contain mediated action requests processed by the runtime (v0.8.0) |
 | `supports_mediated_action_results` | Yes | Mediated results can be summarized in continuation context (v0.8.0) |
+| `supports_bounded_mediated_workflows` | Yes | Output may contain bounded multi-step workflow requests (v0.9.0) |
+| `supports_mediation_policy_profiles` | Yes | Richer mediation policy profile enforcement (v0.9.0) |
 
 These capabilities are used internally to emit accurate warnings and select the appropriate rendering path.
 
 ---
 
-## Execution mediation (v0.8.0)
+## Execution mediation (v0.8.0/v0.9.0)
 
 > **Important:** Execution mediation is **not** native tool calling in Claude Code mode. It is runtime-mediated execution under explicit governance. The backend produces normal text output; the runtime detects, validates, and executes bounded requests on its behalf.
 
@@ -253,17 +263,25 @@ Execution mediation is **disabled by default**. Enable it explicitly only when n
 
 ### What it is
 
-When enabled, the Claude Code backend may embed structured mediated action requests in its output text using a strict delimited format:
+When enabled, the Claude Code backend may embed structured requests in its output text. Two formats are supported:
 
+**Single-action format (v0.8.0):**
 ```
 <mediated_action_request>
 {"mediation_version":"v0.8.0","request_id":"...","action_type":"read","target_tool":"...","arguments":{...},"justification":"..."}
 </mediated_action_request>
 ```
 
-The runtime (not the backend) then:
-1. Parses the request from the output text.
-2. Validates it against policy, visibility, and allowlist.
+**Bounded workflow format (v0.9.0):**
+```
+<mediated_workflow_request>
+{"mediation_version":"v0.9.0","workflow_id":"...","justification":"...","steps":[{"step_index":0,"action_type":"read","target_tool":"...","arguments":{...},"justification":"..."}]}
+</mediated_workflow_request>
+```
+
+For each format, the runtime (not the backend):
+1. Parses the request/workflow from the output text.
+2. Validates each action/step individually against all policy gates.
 3. Executes approved actions through the federation invoker.
 4. Normalizes results and persists them as session events.
 5. Optionally includes compact result summaries in subsequent continuation context.
@@ -271,8 +289,8 @@ The runtime (not the backend) then:
 ### What it is NOT
 
 - **Not native tool calling.** The Claude Code CLI has no tool invocation protocol. Mediated actions are detected in text output by the runtime — not sent to the CLI.
-- **Not autonomous chaining.** Each turn executes at most `max_mediated_actions_per_turn` actions (default: 1). Open-ended multi-step execution is not supported.
-- **Not guaranteed execution.** Requests may be rejected by policy. Rejected requests produce explicit operator-visible warnings and session events.
+- **Not autonomous chaining.** Per-turn and per-session limits strictly bound execution. Open-ended chains are not supported.
+- **Not guaranteed execution.** Requests may be rejected by policy. Rejected requests produce explicit operator-visible warnings and normalized rejection reasons.
 
 ### Allowed action types
 
@@ -282,35 +300,63 @@ The runtime (not the backend) then:
 | `lookup` | Bounded enumeration or search |
 | `inspect` | Non-destructive inspection or verification |
 
-Mutating, write, or open-ended action types are not supported in v0.8.0.
+Mutating, write, or open-ended action types are not supported.
 
 ### Validation gates
 
-Before execution, the runtime validates:
+All gates apply per-action (whether from a single-action or workflow step):
 
-| Gate | Rejection code |
-|---|---|
-| Mediation is enabled in config | `rejected:mediation_disabled` |
-| Request uses supported `mediation_version` | `rejected:unsupported_mediation_version` |
-| `action_type` is in allowed types | `rejected:action_type_not_allowed` |
-| Per-turn action count is within limit | `rejected:per_turn_action_limit_exceeded` |
-| Federation is active | `rejected:federation_inactive` |
-| `target_tool` is visible for active profile | `rejected:tool_not_visible` |
+| Gate | Rejection code | Rejection reason (v0.9.0) |
+|---|---|---|
+| Mediation is enabled in config | `rejected:mediation_disabled` | `feature_disabled` |
+| Request uses supported `mediation_version` | `rejected:unsupported_mediation_version` | `invalid_version` |
+| `action_type` is in allowed types | `rejected:action_type_not_allowed` | `unsupported_action_type` |
+| Per-turn action count is within limit | `rejected:per_turn_action_limit_exceeded` | `per_turn_limit_exceeded` |
+| Session-level approval total within limit (v0.9.0) | `rejected:session_approval_limit_exceeded` | `session_approval_limit_exceeded` |
+| `target_tool` not in denied list (v0.9.0) | `rejected:tool_not_allowed` | `tool_not_allowed` |
+| `target_tool` in allowed list, if configured (v0.9.0) | `rejected:tool_not_allowed` | `tool_not_allowed` |
+| Federation is active | `rejected:federation_inactive` | `federation_inactive` |
+| `target_tool` is visible for active profile | `rejected:tool_not_visible` | `tool_not_visible` |
+
+Workflow requests are additionally checked for step count against `claude_code_max_mediated_workflow_steps`.
+
+### Normalized rejection reasons (v0.9.0)
+
+Each rejection event includes a `rejection_reason` field with a `MediationRejectionReason` enum value. This provides a stable, operator-inspectable reason code without requiring free-text parsing.
 
 ### Observability events
 
+**Single-action events (v0.8.0, preserved):**
+
 | Event type | When recorded |
 |---|---|
-| `mediated_action_requested` | Whenever a request block is parsed from output |
-| `mediated_action_approved` | When validation passes |
-| `mediated_action_rejected` | When any validation gate fails |
-| `mediated_action_completed` | After execution attempt (status: completed or failed) |
+| `mediated_action_requested` | Parsed from output |
+| `mediated_action_approved` | Validation passed |
+| `mediated_action_rejected` | Validation failed |
+| `mediated_action_completed` | After execution attempt |
 
-All events include `request_id`, `target_tool`, and `policy_decision` for operator inspection.
+**Bounded workflow events (v0.9.0):**
+
+| Event type | When recorded |
+|---|---|
+| `mediated_workflow_requested` | Workflow parsed from output |
+| `mediated_workflow_step_requested` | Each step starts validation |
+| `mediated_workflow_step_approved` | Step validation passed |
+| `mediated_workflow_step_rejected` | Step validation failed |
+| `mediated_workflow_step_completed` | Step execution completed or failed |
+| `mediated_workflow_completed` | All steps processed (includes aggregate stats) |
+
+The `mediated_workflow_completed` event payload includes `total_steps`, `approved_steps`, `rejected_steps`, `completed_steps`, and `failed_steps` for operator dashboards.
+
+### Policy profile (v0.9.0)
+
+The active mediation policy is derived from config and available as a `MediationPolicyProfile` object via `MediationEngine.build_policy_profile()`. The profile name (default: `conservative`) is logged with mediation decisions.
 
 ### Continuation integration
 
-When `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION=true`, compact summaries of completed mediated actions are included in the next continuation prompt as a `[Mediated Execution Context]` section. This is disabled by default.
+When `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION=true`, compact summaries of completed actions and workflow steps are included in the next continuation prompt under `[Mediated Execution Context]`. Disabled by default.
+
+Setting `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_REJECTED_MEDIATION_IN_CONTINUATION=true` also includes rejected step summaries. Disabled by default.
 
 ---
 
@@ -352,14 +398,15 @@ Warnings appear in the `warnings` array of the canonical `AgentResponse` envelop
 
 ---
 
-## Known limitations (v0.8.0)
+## Known limitations (v0.9.0)
 
-These limitations remain after v0.8.0 and are documented explicitly:
+These limitations remain after v0.9.0 and are documented explicitly:
 
 - **No native multi-turn execution.** Each CLI invocation is single-shot. v0.7.0 improves continuation *context reconstruction* but does not add native multi-turn execution to the CLI.
 - **Not API-equivalent session continuity.** The structured continuation context improves determinism and operator visibility, but it is still a text reconstruction — not a native backend-persistent conversation state.
-- **Execution mediation is not native tool calling.** v0.8.0 adds runtime-mediated action execution, but the backend itself has no tool invocation protocol. The runtime detects requests in text output and executes them.
+- **Execution mediation is not native tool calling.** v0.8.0/v0.9.0 adds runtime-mediated action execution, but the backend itself has no tool invocation protocol. The runtime detects requests in text output and executes them.
 - **Mediated execution requires active federation.** Mediated actions are executed through the federation invoker. Without active federation configuration, all mediated action requests are rejected with `rejected:federation_inactive`.
+- **Bounded workflow mediation is not autonomous chaining.** v0.9.0 workflows are strictly bounded and operator-configurable. The runtime validates and approves every step individually.
 - **Limited tool forwarding is text-only.** Even when enabled, tools are injected as text descriptions — not invoked. The model sees tool context but cannot call them.
 - **No full federation tool support.** Real tool invocation is not available in the backend itself. Use the `api` backend for full federation tool-use.
 - **No rich stop reason.** `stop_reason` is always `backend_defaulted`.
@@ -412,3 +459,13 @@ Check the `session_continuation_context_built` event via `agent_get_session` for
 | Recommended for | Server/CI deployments | Local Claude Code workflows |
 
 For the full capability matrix, see [backend-capability-matrix.md](backend-capability-matrix.md).
+
+---
+
+## Version notes
+
+- v0.5: Capability matrix introduced. Backend limitations declared programmatically and surfaced as runtime warnings.
+- v0.6: `supports_limited_downstream_tools` added. Claude Code backend can now inject compatible tool descriptions as text (opt-in). Continuation prompts use distinct `[Continuation Session]` framing.
+- v0.7.0: `supports_structured_continuation_context` and `supports_continuation_window_policy` added. Claude Code backend uses a deterministic `SessionContinuationContext` for all continuation calls.
+- v0.8.0: `supports_execution_mediation` and `supports_mediated_action_results` added. Claude Code backend output may contain structured mediated action request blocks processed by the runtime under policy control. This is NOT native tool calling.
+- v0.9.0: `supports_bounded_mediated_workflows` and `supports_mediation_policy_profiles` added. Runtime-mediated execution hardened with: bounded multi-step workflows, richer policy controls (tool allow/deny lists, session approval limits), normalized `MediationRejectionReason` enum, per-step audit events, and configurable rejected-step continuation inclusion. External MCP contracts remain unchanged.

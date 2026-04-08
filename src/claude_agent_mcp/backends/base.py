@@ -59,6 +59,12 @@ class BackendCapabilities:
     supports_mediated_action_results: bool = False
     """Backend supports inclusion of mediated action results in continuation context (v0.8.0)."""
 
+    supports_bounded_mediated_workflows: bool = False
+    """Backend output can contain bounded multi-step mediated workflow requests (v0.9.0)."""
+
+    supports_mediation_policy_profiles: bool = False
+    """Backend supports richer mediation policy profile enforcement (v0.9.0)."""
+
 
 class ExecutionBackend(ABC):
     """Pluggable execution backend interface.

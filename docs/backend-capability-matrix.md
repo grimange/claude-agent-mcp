@@ -1,4 +1,4 @@
-# Backend Capability Matrix (v0.8.0)
+# Backend Capability Matrix (v0.9.0)
 
 This document describes the capability flags declared by each execution backend in `claude-agent-mcp`. These flags are used internally by the workflow executor to emit warnings and suppress unsupported execution paths. They are not exposed in MCP tool contracts.
 
@@ -19,6 +19,8 @@ This document describes the capability flags declared by each execution backend 
 | `supports_continuation_window_policy` | Backend respects `ContinuationWindowPolicy` for bounded reconstruction (v0.7.0) |
 | `supports_execution_mediation` | Backend output may contain structured mediated action requests processed by the runtime (v0.8.0) |
 | `supports_mediated_action_results` | Backend supports inclusion of mediated action results in continuation context (v0.8.0) |
+| `supports_bounded_mediated_workflows` | Backend output may contain bounded multi-step mediated workflow requests (v0.9.0) |
+| `supports_mediation_policy_profiles` | Backend supports richer mediation policy profile enforcement (v0.9.0) |
 
 ---
 
@@ -37,6 +39,8 @@ This document describes the capability flags declared by each execution backend 
 | `supports_continuation_window_policy` | No | **Yes** (v0.7.0) |
 | `supports_execution_mediation` | No | **Yes** (v0.8.0, opt-in) |
 | `supports_mediated_action_results` | No | **Yes** (v0.8.0, opt-in) |
+| `supports_bounded_mediated_workflows` | No | **Yes** (v0.9.0, opt-in) |
+| `supports_mediation_policy_profiles` | No | **Yes** (v0.9.0, opt-in) |
 
 ---
 
@@ -110,6 +114,22 @@ Enabled opt-in via `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CON
 
 When `False` (api): not applicable.
 
+### `supports_bounded_mediated_workflows` (v0.9.0)
+
+When `True` (claude_code): the backend's text output may contain bounded multi-step mediated workflow request blocks (`<mediated_workflow_request>`). The runtime validates and executes each step individually under policy control, with per-step and workflow-level audit events.
+
+> **This is not native tool calling.** Workflow mediation is text-pattern detection and bounded runtime dispatch — not backend-native workflow execution.
+
+Enabled opt-in (mediation must be enabled via `CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION=true`). Maximum steps per workflow is controlled by `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_WORKFLOW_STEPS` (default: 1).
+
+When `False` (api): not applicable.
+
+### `supports_mediation_policy_profiles` (v0.9.0)
+
+When `True` (claude_code): richer mediation policy controls are enforced, including tool allow/deny lists, session-level approval limits, and normalized `MediationRejectionReason` codes. The active policy is summarized in a `MediationPolicyProfile` object for operator inspection.
+
+When `False` (api): not applicable.
+
 ---
 
 ## Warnings emitted by the workflow executor (v0.7.0)
@@ -147,7 +167,7 @@ Capabilities are declared as a frozen `BackendCapabilities` dataclass in `src/cl
 ```python
 from claude_agent_mcp.backends.base import BackendCapabilities
 
-# claude_code backend declaration (v0.8.0)
+# claude_code backend declaration (v0.9.0)
 BackendCapabilities(
     supports_downstream_tools=False,
     supports_structured_tool_use=False,
@@ -160,6 +180,8 @@ BackendCapabilities(
     supports_continuation_window_policy=True,         # v0.7.0
     supports_execution_mediation=True,                # v0.8.0, opt-in via config
     supports_mediated_action_results=True,            # v0.8.0, opt-in via config
+    supports_bounded_mediated_workflows=True,         # v0.9.0, opt-in via config
+    supports_mediation_policy_profiles=True,          # v0.9.0, opt-in via config
 )
 
 # api backend declaration
@@ -198,3 +220,4 @@ Rejected actions are also recorded as `mediated_action_rejected` session events 
 - v0.6: `supports_limited_downstream_tools` added. Claude Code backend can now inject compatible tool descriptions as text (opt-in). Continuation prompts use distinct `[Continuation Session]` framing.
 - v0.7.0: `supports_structured_continuation_context` and `supports_continuation_window_policy` added. Claude Code backend uses a deterministic `SessionContinuationContext` for all continuation calls. Warning carry-forward is classified and bounded. Forwarding history is summarized. Continuation reconstruction decisions are recorded as inspectable session events.
 - v0.8.0: `supports_execution_mediation` and `supports_mediated_action_results` added. Claude Code backend output may contain structured mediated action request blocks. The runtime validates and executes approved requests under explicit policy control. This is NOT native tool calling. All mediation events are persisted as session events for operator inspection. Mediated results can optionally be summarized in continuation context.
+- v0.9.0: `supports_bounded_mediated_workflows` and `supports_mediation_policy_profiles` added. Mediation hardened with bounded multi-step workflows, tool allow/deny lists, session approval limits, normalized `MediationRejectionReason` enum, per-step workflow events, and configurable rejected-step continuation inclusion. No breaking changes to MCP contracts.

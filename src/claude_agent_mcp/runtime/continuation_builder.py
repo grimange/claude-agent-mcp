@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RECONSTRUCTION_VERSION = "v0.8.0"
+_RECONSTRUCTION_VERSION = "v0.9.0"
 
 
 class ContinuationContextBuilder:
@@ -128,8 +128,9 @@ class ContinuationContextBuilder:
             reconstruction_version=_RECONSTRUCTION_VERSION,
         )
 
-        # v0.8.0: Include mediated action summaries when config allows.
+        # v0.8.0/v0.9.0: Include mediated action and workflow summaries when config allows.
         mediated_summaries = cls._extract_mediated_summaries(events, config)
+        workflow_summaries = cls._extract_workflow_summaries(events, config)
 
         ctx = SessionContinuationContext(
             session_id=session.session_id,
@@ -144,6 +145,7 @@ class ContinuationContextBuilder:
             reconstruction_version=_RECONSTRUCTION_VERSION,
             render_stats=render_stats,
             mediated_action_summaries=mediated_summaries,
+            mediated_workflow_summaries=workflow_summaries,
         )
 
         if turns_omitted > 0 or warnings_omitted > 0 or forwarding_omitted > 0:
@@ -348,8 +350,11 @@ class ContinuationContextBuilder:
         Only included when ``claude_code_include_mediated_results_in_continuation``
         is enabled in config. When config is None or the flag is disabled, returns [].
 
-        Produces one compact line per completed mediated action:
+        Produces one compact line per completed single-action mediated action:
             "Tool <name> (<action_type>): <result_summary>"
+
+        Rejected step summaries are included when
+        ``claude_code_include_rejected_mediation_in_continuation`` is enabled (v0.9.0).
 
         Args:
             events: All session events.
@@ -362,6 +367,10 @@ class ContinuationContextBuilder:
             return []
         if not getattr(config, "claude_code_include_mediated_results_in_continuation", False):
             return []
+
+        include_rejected = getattr(
+            config, "claude_code_include_rejected_mediation_in_continuation", False
+        )
 
         summaries: list[str] = []
         for event in events:
@@ -382,5 +391,83 @@ class ContinuationContextBuilder:
                         summaries.append(f"{label}: {summary_text}")
                     else:
                         summaries.append(f"{label}: (completed, no result summary)")
+
+            elif event.event_type == EventType.mediated_action_rejected and include_rejected:
+                tool_name = event.payload.get("target_tool", "")
+                policy_decision = event.payload.get("policy_decision", "")
+                failure_reason = event.payload.get("failure_reason", "")
+                if tool_name:
+                    reason_text = failure_reason or policy_decision or "rejected by policy"
+                    summaries.append(f"Tool {tool_name} (rejected): {reason_text[:100]}")
+
+        return summaries
+
+    @staticmethod
+    def _extract_workflow_summaries(
+        events: list["SessionEventRecord"],
+        config: "Config | None",
+    ) -> list[str]:
+        """Extract compact bounded workflow step summaries from session events (v0.9.0).
+
+        Only included when ``claude_code_include_mediated_results_in_continuation``
+        is enabled in config. When config is None or the flag is disabled, returns [].
+
+        Produces one summary line per completed or rejected workflow step.
+        Rejected step summaries are included when
+        ``claude_code_include_rejected_mediation_in_continuation`` is enabled.
+
+        Args:
+            events: All session events.
+            config: Runtime config controlling inclusion.
+
+        Returns:
+            List of compact summary strings. Empty when disabled or no workflow events.
+        """
+        if config is None:
+            return []
+        if not getattr(config, "claude_code_include_mediated_results_in_continuation", False):
+            return []
+
+        include_rejected = getattr(
+            config, "claude_code_include_rejected_mediation_in_continuation", False
+        )
+
+        summaries: list[str] = []
+        for event in events:
+            if event.event_type == EventType.mediated_workflow_step_completed:
+                wf_id = event.payload.get("workflow_id", "")
+                step_index = event.payload.get("step_index", "?")
+                tool_name = event.payload.get("target_tool", "")
+                status = event.payload.get("status", "")
+                result_summary = event.payload.get("result_summary", "")
+
+                if status == "completed" and tool_name:
+                    label = f"Workflow {wf_id} step {step_index}: tool {tool_name}"
+                    if result_summary:
+                        summary_text = result_summary[:120]
+                        if len(result_summary) > 120:
+                            summary_text += " [truncated]"
+                        summaries.append(f"{label}: {summary_text}")
+                    else:
+                        summaries.append(f"{label}: (completed, no result summary)")
+                elif status == "failed" and tool_name:
+                    failure_reason = event.payload.get("failure_reason", "execution failed")
+                    summaries.append(
+                        f"Workflow {wf_id} step {step_index}: tool {tool_name} "
+                        f"(failed): {failure_reason[:80]}"
+                    )
+
+            elif event.event_type == EventType.mediated_workflow_step_rejected and include_rejected:
+                wf_id = event.payload.get("workflow_id", "")
+                step_index = event.payload.get("step_index", "?")
+                tool_name = event.payload.get("target_tool", "")
+                rejection_reason = event.payload.get("rejection_reason", "")
+                failure_reason = event.payload.get("failure_reason", "")
+                if tool_name:
+                    reason_text = failure_reason or rejection_reason or "rejected by policy"
+                    summaries.append(
+                        f"Workflow {wf_id} step {step_index}: tool {tool_name} "
+                        f"(rejected): {reason_text[:80]}"
+                    )
 
         return summaries
