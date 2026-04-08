@@ -391,7 +391,8 @@ class TestSessionContinuationContextV9:
             session_id="sess_001",
             is_continuation=True,
         )
-        assert ctx.reconstruction_version == "v0.9.0"
+        # Updated to v1.0.0 as part of v1.0.0 stabilization release
+        assert ctx.reconstruction_version == "v1.0.0"
 
     def test_mediated_action_summaries_still_present(self):
         """Regression: v0.8.0 field must be preserved."""
@@ -1130,14 +1131,16 @@ class TestExtractMediatedSummariesRejectedInclusion:
 class TestReconstructionVersion:
     def test_continuation_builder_version_is_v09(self):
         from claude_agent_mcp.runtime.continuation_builder import _RECONSTRUCTION_VERSION
-        assert _RECONSTRUCTION_VERSION == "v0.9.0"
+        # Updated to v1.0.0 as part of v1.0.0 stabilization release
+        assert _RECONSTRUCTION_VERSION == "v1.0.0"
 
     def test_build_context_uses_v09_version(self):
         cfg = _make_config()
         session = _make_session()
         policy = ContinuationWindowPolicy()
         ctx = ContinuationContextBuilder.build_context(session, [], policy, config=cfg)
-        assert ctx.reconstruction_version == "v0.9.0"
+        # Updated to v1.0.0 as part of v1.0.0 stabilization release
+        assert ctx.reconstruction_version == "v1.0.0"
 
     def test_mediated_workflow_summaries_in_context(self):
         cfg = _make_config(

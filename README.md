@@ -2,7 +2,7 @@
 
 A sessioned Claude-backed agent runtime exposed over MCP (Model Context Protocol).
 
-**Current version: v0.9.0**
+**Current version: v1.0.0**
 
 ## Overview
 
@@ -15,6 +15,8 @@ A sessioned Claude-backed agent runtime exposed over MCP (Model Context Protocol
 - **Structured verification** — evidence-based evaluation with fail-closed semantics
 - **Governed federation** — optional downstream MCP tool access with allowlist control
 - **Runtime-mediated execution** — optional, governed action execution for the Claude Code backend (v0.8.0/v0.9.0)
+- **Operator profile presets** — named configurations for common deployment scenarios (v1.0.0)
+- **Runtime status inspection** — inspect resolved config and capability state via `agent_get_runtime_status` (v1.0.0)
 
 Single-node, operator-controlled, local-first.
 
@@ -29,6 +31,7 @@ Single-node, operator-controlled, local-first.
 | `agent_get_session` | Get session detail by ID |
 | `agent_list_sessions` | List recent sessions |
 | `agent_verify_task` | Run a structured verification workflow |
+| `agent_get_runtime_status` | Inspect resolved runtime config and capability state (v1.0.0) |
 
 ---
 

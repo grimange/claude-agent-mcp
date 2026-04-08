@@ -179,6 +179,57 @@ class VerificationVerdict(str, Enum):
     insufficient_evidence = "insufficient_evidence"
 
 
+class OperatorProfilePreset(str, Enum):
+    """Named operator-facing profile presets that configure multiple fields at once (v1.0.0).
+
+    Presets provide a clear mental model for common deployment configurations.
+    Individual env vars always take precedence over preset defaults.
+
+    Mapping:
+        safe_default         — Conservative baseline; mediation off; short continuation windows.
+        continuity_optimized — Longer continuation windows; mediation off; more context carried forward.
+        mediation_enabled    — Mediation on; conservative per-turn limit; results in continuation.
+        workflow_limited     — Mediation on; bounded multi-step workflows; session approval cap.
+    """
+
+    safe_default = "safe_default"
+    continuity_optimized = "continuity_optimized"
+    mediation_enabled = "mediation_enabled"
+    workflow_limited = "workflow_limited"
+
+
+class WarningCode(str, Enum):
+    """Stable warning category codes for operator-facing warning messages (v1.0.0).
+
+    Used to normalize warning phrasing across the runtime. Each code maps to a
+    distinct class of operator-visible degradation or policy condition.
+    """
+
+    tool_downgrade = "tool_downgrade"
+    """Downstream tools were resolved but not forwarded to the backend."""
+
+    tool_forwarding_incompatible = "tool_forwarding_incompatible"
+    """A specific tool was filtered as incompatible with text-based injection."""
+
+    history_truncated = "history_truncated"
+    """Continuation history was truncated due to window policy limits."""
+
+    stop_reason_limited = "stop_reason_limited"
+    """Stop reason is backend_defaulted due to backend limitations."""
+
+    empty_response = "empty_response"
+    """Backend returned an empty response."""
+
+    mediation_rejected = "mediation_rejected"
+    """A mediated action or workflow step was rejected by policy."""
+
+    federation_inactive_for_mediation = "federation_inactive_for_mediation"
+    """Mediated action requested federation which is not active."""
+
+    continuation_context_truncated = "continuation_context_truncated"
+    """Continuation context was truncated by window policy."""
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -309,6 +360,61 @@ class AgentResponse(BaseModel):
     artifacts: list[ArtifactReference] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     errors: list[ErrorObject] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Runtime status inspection (v1.0.0)
+# ---------------------------------------------------------------------------
+
+
+class RuntimeStatusSnapshot(BaseModel):
+    """Resolved runtime status and capability snapshot (v1.0.0).
+
+    Produced by RuntimeStatusInspector. Shows the operator what the runtime
+    believes is enabled and supported at startup, without requiring inference
+    from logs or env var combinations.
+
+    Exposed via agent_get_runtime_status MCP tool and startup log.
+    """
+
+    version: str
+    """Package version."""
+
+    operator_profile_preset: str | None
+    """Active operator profile preset, if set. None means no preset applied."""
+
+    backend: str
+    """Active execution backend: 'api' or 'claude_code'."""
+
+    transport: str
+    """Active transport: 'stdio' or 'streamable-http'."""
+
+    model: str
+    """Active Claude model identifier."""
+
+    federation_enabled: bool
+    """Whether federation is enabled in config."""
+
+    federation_active: bool
+    """Whether federation was successfully initialized (tools are discoverable)."""
+
+    capability_flags: dict[str, bool]
+    """Effective capability flags for the active backend and config."""
+
+    continuation_settings: dict[str, Any]
+    """Resolved continuation window policy settings."""
+
+    mediation_settings: dict[str, Any]
+    """Resolved single-action mediation settings."""
+
+    workflow_settings: dict[str, Any]
+    """Resolved bounded workflow mediation settings."""
+
+    preserved_limitations: list[str]
+    """Known, intentional limitations that are product boundaries in v1.0.0."""
+
+    resolved_at: str
+    """ISO 8601 timestamp when this snapshot was produced."""
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +744,7 @@ class SessionContinuationContext(BaseModel):
     forwarding_history: ForwardingContinuationSummary | None = None
     active_constraints: dict[str, Any] = Field(default_factory=dict)
     continuity_notes: list[str] = Field(default_factory=list)
-    reconstruction_version: str = "v0.9.0"
+    reconstruction_version: str = "v1.0.0"
     render_stats: ContinuationRenderStats | None = None
     mediated_action_summaries: list[str] = Field(default_factory=list)
     """Compact summaries of mediated action results from prior turns (v0.8.0).

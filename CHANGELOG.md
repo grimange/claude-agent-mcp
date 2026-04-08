@@ -7,6 +7,66 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.0] — 2026-04-08
+
+### Stabilization, operator UX, and production-hardening release
+
+v1.0.0 is the first stable production-ready release of the governed Claude Code execution runtime model.
+It is a stabilization and clarity release — not a capability expansion.
+
+No breaking changes to MCP tool contracts, response envelopes, or mediation formats.
+All v0.6–v0.9 deployments are fully forward-compatible.
+
+### Added
+
+- **`OperatorProfilePreset` enum** (`types.py`) — four named presets for common deployment
+  configurations: `safe_default`, `continuity_optimized`, `mediation_enabled`, `workflow_limited`.
+  Each preset configures multiple fields at once. Individual env vars always override presets.
+- **`CLAUDE_AGENT_MCP_OPERATOR_PROFILE` env var** (`config.py`) — selects an operator profile
+  preset. Preset defaults are applied first; individual env vars override on top.
+- **`_OPERATOR_PRESET_DEFAULTS` dict** (`config.py`) — maps preset names to default values for
+  all configurable continuation and mediation fields.
+- **`WarningCode` enum** (`types.py`) — eight stable warning category codes for normalized
+  operator-facing warning messages: `tool_downgrade`, `tool_forwarding_incompatible`,
+  `history_truncated`, `stop_reason_limited`, `empty_response`, `mediation_rejected`,
+  `federation_inactive_for_mediation`, `continuation_context_truncated`.
+- **`RuntimeStatusSnapshot` model** (`types.py`) — resolved runtime status and capability
+  snapshot. Fields: `version`, `operator_profile_preset`, `backend`, `transport`, `model`,
+  `federation_enabled`, `federation_active`, `capability_flags`, `continuation_settings`,
+  `mediation_settings`, `workflow_settings`, `preserved_limitations`, `resolved_at`.
+- **`RuntimeStatusInspector`** (`runtime/status_inspector.py`) — builds `RuntimeStatusSnapshot`
+  from active config and optional `BackendCapabilities`. Wired into server startup.
+- **`AuditPresenter`** (`runtime/audit_presenter.py`) — static helpers for structured summaries
+  from session event logs. Methods: `continuation_summary()`, `mediation_summary()`,
+  `workflow_summary()`, `session_totals()`. Also provides normalized warning format helpers
+  (`format_tool_downgrade_warning()`, `format_mediation_rejected_warning()`, etc.).
+- **`agent_get_runtime_status` MCP tool** (`server.py`) — additive inspection tool. Returns
+  a `RuntimeStatusSnapshot` as JSON. Does not modify state.
+- **`docs/operator-guide.md`** — comprehensive operator setup, configuration, and inspection guide.
+- **`docs/upgrade-guide-v1.0.md`** — migration notes from v0.6, v0.7, v0.8, and v0.9.
+- **`docs/release-validation.md`** — release checklist including smoke tests, compatibility
+  statement, and packaging validation.
+
+### Changed
+
+- **`server.py` `VERSION`** — updated from `"0.4.0"` to `"1.0.0"`.
+- **`pyproject.toml` `version`** — updated from `"0.3.0"` to `"1.0.0"`.
+- **`reconstruction_version`** — `SessionContinuationContext` default and
+  `_RECONSTRUCTION_VERSION` constant updated from `"v0.9.0"` to `"v1.0.0"`.
+- **`docs/backend-capability-matrix.md`** — updated to v1.0.0; v1.0.0 version notes added.
+- **`docs/claude-code-backend.md`** — updated to v1.0.0; operator preset config option documented.
+- **Server startup log** — enhanced to include `preset=` in the ready log line.
+
+### Preserved limitations
+
+- No native `tool_use` / `tool_result` in the Claude Code backend
+- No streaming transport
+- No cross-backend session migration
+- No broad autonomous execution chaining
+- Mediated execution requires active federation
+
+---
+
 ## [0.9.0] — 2026-04-08
 
 ### Mediation hardening and bounded workflow expansion track release

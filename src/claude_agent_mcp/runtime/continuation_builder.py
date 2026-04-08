@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RECONSTRUCTION_VERSION = "v0.9.0"
+_RECONSTRUCTION_VERSION = "v1.0.0"
 
 
 class ContinuationContextBuilder:

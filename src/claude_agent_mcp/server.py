@@ -35,6 +35,7 @@ from claude_agent_mcp.runtime.artifact_store import ArtifactStore
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
 from claude_agent_mcp.runtime.profile_registry import ProfileRegistry
 from claude_agent_mcp.runtime.session_store import SessionStore
+from claude_agent_mcp.runtime.status_inspector import RuntimeStatusInspector
 from claude_agent_mcp.runtime.workflow_executor import WorkflowExecutor
 from claude_agent_mcp.tools.continue_session import handle_continue_session
 from claude_agent_mcp.tools.get_session import handle_get_session
@@ -44,7 +45,7 @@ from claude_agent_mcp.tools.verify_task import handle_verify_task
 
 logger = get_logger(__name__)
 
-VERSION = "0.4.0"
+VERSION = "1.0.0"
 
 # ---------------------------------------------------------------------------
 # Tool schemas (JSON Schema for each v0.1 tool)
@@ -186,6 +187,20 @@ TOOL_DEFINITIONS: list[Tool] = [
             "required": ["task"],
         },
     ),
+    Tool(
+        name="agent_get_runtime_status",
+        description=(
+            "Get a resolved runtime status snapshot showing what the runtime believes "
+            "is enabled and supported. Returns backend, transport, operator profile preset, "
+            "effective capability flags, mediation settings, continuation settings, "
+            "federation status, and known preserved limitations. "
+            "Additive inspection tool — does not modify state."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
 ]
 
 
@@ -197,8 +212,9 @@ def build_server(
     session_store: SessionStore,
     artifact_store: ArtifactStore,
     executor: WorkflowExecutor,
+    status_inspector: RuntimeStatusInspector | None = None,
 ) -> Server:
-    """Build and return the MCP Server with all v0.1 tools registered.
+    """Build and return the MCP Server with all tools registered.
 
     This function is transport-agnostic. Both stdio and streamable-http
     transports call this to obtain the same server instance.
@@ -224,6 +240,12 @@ def build_server(
             result = await handle_list_sessions(session_store, arguments)
         elif name == "agent_verify_task":
             result = await handle_verify_task(executor, arguments)
+        elif name == "agent_get_runtime_status":
+            if status_inspector is not None:
+                snapshot = status_inspector.build_snapshot()
+                result = snapshot.model_dump()
+            else:
+                result = {"error": {"code": "inspector_unavailable", "message": "Runtime status inspector not initialized"}}
         else:
             result = {
                 "error": {
@@ -242,7 +264,10 @@ def build_server(
 # ---------------------------------------------------------------------------
 
 async def _setup_runtime(config):
-    """Open stores and build executor. Returns (session_store, artifact_store, executor)."""
+    """Open stores and build executor.
+
+    Returns (session_store, artifact_store, executor, status_inspector).
+    """
     config.ensure_dirs()
 
     session_store = SessionStore(config)
@@ -261,7 +286,8 @@ async def _setup_runtime(config):
 
     # Initialize federation (v0.3) — disabled by default, no-op if not configured
     federation = await FederationManager.build(config)
-    if federation.is_active():
+    federation_active = federation.is_active()
+    if federation_active:
         logger.info(
             "Federation active: %d allowlisted tool(s) available",
             len(federation.catalog.allowed_tools()),
@@ -274,11 +300,29 @@ async def _setup_runtime(config):
         policy_engine=policy_engine,
         profile_registry=profile_registry,
         execution_backend=execution_backend,
-        visibility_resolver=federation.visibility_resolver if federation.is_active() else None,
+        visibility_resolver=federation.visibility_resolver if federation_active else None,
         federation_server_configs=federation.server_configs,
     )
 
-    return session_store, artifact_store, executor
+    # Build runtime status inspector (v1.0.0)
+    status_inspector = RuntimeStatusInspector(config)
+    status_inspector.set_federation_active(federation_active)
+
+    if config.operator_profile_preset:
+        logger.info(
+            "Operator profile preset: %s",
+            config.operator_profile_preset,
+        )
+
+    logger.info(
+        "claude-agent-mcp v%s ready — backend=%s transport=%s preset=%s",
+        VERSION,
+        config.execution_backend,
+        config.transport,
+        config.operator_profile_preset or "none",
+    )
+
+    return session_store, artifact_store, executor, status_inspector
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +332,8 @@ async def _setup_runtime(config):
 async def run_stdio(config) -> None:
     from claude_agent_mcp.transports.stdio import run_stdio as _run_stdio
 
-    session_store, artifact_store, executor = await _setup_runtime(config)
-    server = build_server(session_store, artifact_store, executor)
+    session_store, artifact_store, executor, status_inspector = await _setup_runtime(config)
+    server = build_server(session_store, artifact_store, executor, status_inspector)
     try:
         await _run_stdio(server, session_store)
     finally:
@@ -300,8 +344,8 @@ async def run_stdio(config) -> None:
 async def run_streamable_http(config) -> None:
     from claude_agent_mcp.transports.streamable_http import run_streamable_http as _run_http
 
-    session_store, artifact_store, executor = await _setup_runtime(config)
-    server = build_server(session_store, artifact_store, executor)
+    session_store, artifact_store, executor, status_inspector = await _setup_runtime(config)
+    server = build_server(session_store, artifact_store, executor, status_inspector)
     try:
         await _run_http(server, host=config.host, port=config.port)
     finally:

@@ -1,4 +1,4 @@
-# Claude Code Backend (v0.9.0)
+# Claude Code Backend (v1.0.0)
 
 ## Overview
 
@@ -56,6 +56,11 @@ export CLAUDE_AGENT_MCP_CLAUDE_CODE_DENIED_MEDIATED_TOOLS=                # defa
 export CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS=100    # total per session
 export CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_REJECTED_MEDIATION_IN_CONTINUATION=false
 export CLAUDE_AGENT_MCP_CLAUDE_CODE_MEDIATION_POLICY_PROFILE=conservative
+
+# Optional (v1.0.0): operator profile preset — sets sensible defaults for common scenarios
+# Values: safe_default | continuity_optimized | mediation_enabled | workflow_limited
+# Individual env vars above always override preset defaults.
+export CLAUDE_AGENT_MCP_OPERATOR_PROFILE=
 ```
 
 Do not set `ANTHROPIC_API_KEY` when using the Claude Code backend. The backend does not use it.

@@ -78,17 +78,19 @@ def test_starlette_app_has_mcp_route(
 def test_build_server_returns_same_tools_regardless_of_call(
     session_store, artifact_store_fixture, executor
 ):
-    """build_server must register exactly the v0.1 tool surface."""
+    """build_server must register the v0.1 tool surface plus additive v1.0.0 tool."""
     server = build_server(session_store, artifact_store_fixture, executor)
     # Verify the TOOL_DEFINITIONS are intact (transport-agnostic contract)
     names = {t.name for t in TOOL_DEFINITIONS}
-    assert names == {
+    v01_tools = {
         "agent_run_task",
         "agent_continue_session",
         "agent_get_session",
         "agent_list_sessions",
         "agent_verify_task",
     }
+    assert v01_tools.issubset(names)
+    assert "agent_get_runtime_status" in names
 
 
 # ---------------------------------------------------------------------------

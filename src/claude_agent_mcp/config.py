@@ -16,6 +16,12 @@ Environment variable reference:
   CLAUDE_AGENT_MCP_LOCK_TTL       — Session lock TTL in seconds (default: 300)
   CLAUDE_AGENT_MCP_ALLOWED_DIRS   — Comma-separated allowed working directories
 
+Operator profile preset (v1.0.0):
+  CLAUDE_AGENT_MCP_OPERATOR_PROFILE — Named preset: safe_default | continuity_optimized |
+                                       mediation_enabled | workflow_limited (default: none)
+  Individual env vars always take precedence over preset defaults. The preset provides
+  a clear starting point; operators can override specific fields on top of it.
+
 Execution backend variables (v0.4):
   CLAUDE_AGENT_MCP_EXECUTION_BACKEND       — Backend: api | claude_code (default: api)
   CLAUDE_AGENT_MCP_CLAUDE_CODE_CLI_PATH    — Path to claude CLI binary (claude_code backend)
@@ -65,6 +71,78 @@ load_dotenv()
 VALID_TRANSPORTS = {"stdio", "streamable-http"}
 VALID_EXECUTION_BACKENDS = {"api", "claude_code"}
 
+# ---------------------------------------------------------------------------
+# Operator profile preset defaults (v1.0.0)
+# ---------------------------------------------------------------------------
+# Each preset maps field keys to string values (matching env var encoding).
+# Individual env vars always override preset defaults — see Config.__init__.
+#
+# Key names match the field suffix used in env var construction to keep the
+# mapping readable. The Config initializer resolves these via _preset().
+
+_OPERATOR_PRESET_DEFAULTS: dict[str, dict[str, str]] = {
+    "safe_default": {
+        # Conservative baseline: mediation off, short windows, no extra context.
+        "enable_execution_mediation": "false",
+        "max_continuation_turns": "5",
+        "max_continuation_warnings": "3",
+        "max_continuation_forwarding_events": "3",
+        "include_verification_context": "true",
+        "include_tool_downgrade_context": "true",
+        "max_mediated_actions_per_turn": "1",
+        "max_mediated_workflow_steps": "1",
+        "max_session_mediated_approvals": "10",
+        "include_mediated_results_in_continuation": "false",
+        "include_rejected_mediation_in_continuation": "false",
+        "mediation_policy_profile": "conservative",
+    },
+    "continuity_optimized": {
+        # Longer continuation windows; mediation off; more context carried forward.
+        "enable_execution_mediation": "false",
+        "max_continuation_turns": "10",
+        "max_continuation_warnings": "5",
+        "max_continuation_forwarding_events": "5",
+        "include_verification_context": "true",
+        "include_tool_downgrade_context": "true",
+        "max_mediated_actions_per_turn": "1",
+        "max_mediated_workflow_steps": "1",
+        "max_session_mediated_approvals": "10",
+        "include_mediated_results_in_continuation": "true",
+        "include_rejected_mediation_in_continuation": "false",
+        "mediation_policy_profile": "conservative",
+    },
+    "mediation_enabled": {
+        # Mediation on; conservative per-turn limit; results included in continuation.
+        "enable_execution_mediation": "true",
+        "max_continuation_turns": "5",
+        "max_continuation_warnings": "3",
+        "max_continuation_forwarding_events": "3",
+        "include_verification_context": "true",
+        "include_tool_downgrade_context": "true",
+        "max_mediated_actions_per_turn": "3",
+        "max_mediated_workflow_steps": "1",
+        "max_session_mediated_approvals": "50",
+        "include_mediated_results_in_continuation": "true",
+        "include_rejected_mediation_in_continuation": "false",
+        "mediation_policy_profile": "mediation_enabled",
+    },
+    "workflow_limited": {
+        # Mediation on; bounded multi-step workflows; session approval cap.
+        "enable_execution_mediation": "true",
+        "max_continuation_turns": "5",
+        "max_continuation_warnings": "3",
+        "max_continuation_forwarding_events": "3",
+        "include_verification_context": "true",
+        "include_tool_downgrade_context": "true",
+        "max_mediated_actions_per_turn": "5",
+        "max_mediated_workflow_steps": "3",
+        "max_session_mediated_approvals": "30",
+        "include_mediated_results_in_continuation": "true",
+        "include_rejected_mediation_in_continuation": "false",
+        "mediation_policy_profile": "workflow_limited",
+    },
+}
+
 
 def _env(primary: str, fallback: str | None = None, default: str = "") -> str:
     """Return primary env var, falling back to legacy name, then default."""
@@ -83,6 +161,21 @@ class Config:
 
     def __init__(self) -> None:
         self.anthropic_api_key: str = os.environ.get("ANTHROPIC_API_KEY", "")
+
+        # --- Operator profile preset (v1.0.0) ---
+        # Load preset first so individual fields can use preset defaults as fallback.
+        # Individual env vars always take precedence over preset defaults.
+        operator_preset_raw = _env(
+            "CLAUDE_AGENT_MCP_OPERATOR_PROFILE", default=""
+        ).strip().lower()
+        self.operator_profile_preset: str | None = operator_preset_raw or None
+        _preset_defaults: dict[str, str] = _OPERATOR_PRESET_DEFAULTS.get(
+            operator_preset_raw, {}
+        )
+
+        def _preset(field: str, hardcoded_default: str = "") -> str:
+            """Return preset default for a field, or hardcoded_default if not in preset."""
+            return _preset_defaults.get(field, hardcoded_default)
 
         # --- Transport ---
         self.transport: str = _env(
@@ -162,34 +255,44 @@ class Config:
             claude_code_limited_tool_forwarding_raw in {"true", "1", "yes"}
         )
 
-        # Continuation window policy (v0.7.0) — conservative defaults
+        # Continuation window policy (v0.7.0) — conservative defaults; preset-aware (v1.0.0)
         self.claude_code_max_continuation_turns: int = int(
-            _env("CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_TURNS", default="5").strip()
+            _env(
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_TURNS",
+                default=_preset("max_continuation_turns", "5"),
+            ).strip()
         )
         self.claude_code_max_continuation_warnings: int = int(
-            _env("CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_WARNINGS", default="3").strip()
+            _env(
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_WARNINGS",
+                default=_preset("max_continuation_warnings", "3"),
+            ).strip()
         )
         self.claude_code_max_continuation_forwarding_events: int = int(
             _env(
-                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_FORWARDING_EVENTS", default="3"
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_FORWARDING_EVENTS",
+                default=_preset("max_continuation_forwarding_events", "3"),
             ).strip()
         )
         claude_code_include_verification_context_raw = _env(
-            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_VERIFICATION_CONTEXT", default="true"
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_VERIFICATION_CONTEXT",
+            default=_preset("include_verification_context", "true"),
         ).strip().lower()
         self.claude_code_include_verification_context: bool = (
             claude_code_include_verification_context_raw in {"true", "1", "yes"}
         )
         claude_code_include_tool_downgrade_context_raw = _env(
-            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_TOOL_DOWNGRADE_CONTEXT", default="true"
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_TOOL_DOWNGRADE_CONTEXT",
+            default=_preset("include_tool_downgrade_context", "true"),
         ).strip().lower()
         self.claude_code_include_tool_downgrade_context: bool = (
             claude_code_include_tool_downgrade_context_raw in {"true", "1", "yes"}
         )
 
-        # Execution mediation (v0.8.0) — disabled by default, conservative values
+        # Execution mediation (v0.8.0) — disabled by default; preset-aware (v1.0.0)
         claude_code_enable_mediation_raw = _env(
-            "CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION", default="false"
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_ENABLE_EXECUTION_MEDIATION",
+            default=_preset("enable_execution_mediation", "false"),
         ).strip().lower()
         self.claude_code_enable_execution_mediation: bool = (
             claude_code_enable_mediation_raw in {"true", "1", "yes"}
@@ -197,7 +300,8 @@ class Config:
 
         self.claude_code_max_mediated_actions_per_turn: int = int(
             _env(
-                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_ACTIONS_PER_TURN", default="1"
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_ACTIONS_PER_TURN",
+                default=_preset("max_mediated_actions_per_turn", "1"),
             ).strip()
         )
 
@@ -211,16 +315,17 @@ class Config:
 
         claude_code_include_mediated_raw = _env(
             "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_MEDIATED_RESULTS_IN_CONTINUATION",
-            default="false",
+            default=_preset("include_mediated_results_in_continuation", "false"),
         ).strip().lower()
         self.claude_code_include_mediated_results_in_continuation: bool = (
             claude_code_include_mediated_raw in {"true", "1", "yes"}
         )
 
-        # Bounded workflow mediation (v0.9.0) — additive, conservative defaults
+        # Bounded workflow mediation (v0.9.0) — additive; preset-aware (v1.0.0)
         self.claude_code_max_mediated_workflow_steps: int = int(
             _env(
-                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_WORKFLOW_STEPS", default="1"
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_MEDIATED_WORKFLOW_STEPS",
+                default=_preset("max_mediated_workflow_steps", "1"),
             ).strip()
         )
 
@@ -242,20 +347,22 @@ class Config:
 
         self.claude_code_max_session_mediated_approvals: int = int(
             _env(
-                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS", default="100"
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS",
+                default=_preset("max_session_mediated_approvals", "100"),
             ).strip()
         )
 
         claude_code_include_rejected_mediation_raw = _env(
             "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_REJECTED_MEDIATION_IN_CONTINUATION",
-            default="false",
+            default=_preset("include_rejected_mediation_in_continuation", "false"),
         ).strip().lower()
         self.claude_code_include_rejected_mediation_in_continuation: bool = (
             claude_code_include_rejected_mediation_raw in {"true", "1", "yes"}
         )
 
         self.claude_code_mediation_policy_profile: str = _env(
-            "CLAUDE_AGENT_MCP_CLAUDE_CODE_MEDIATION_POLICY_PROFILE", default="conservative"
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_MEDIATION_POLICY_PROFILE",
+            default=_preset("mediation_policy_profile", "conservative"),
         ).strip()
 
         # --- Federation (v0.3) ---

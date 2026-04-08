@@ -11,7 +11,7 @@ from claude_agent_mcp.server import TOOL_DEFINITIONS
 
 
 def test_tool_definitions_count():
-    """v0.1 must expose exactly five tools."""
+    """v1.0.0 exposes the five v0.1 tools plus the additive status inspection tool."""
     names = {t.name for t in TOOL_DEFINITIONS}
     assert names == {
         "agent_run_task",
@@ -19,6 +19,7 @@ def test_tool_definitions_count():
         "agent_get_session",
         "agent_list_sessions",
         "agent_verify_task",
+        "agent_get_runtime_status",
     }
 
 
