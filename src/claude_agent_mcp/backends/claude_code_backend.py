@@ -1,4 +1,4 @@
-"""Claude Code execution backend for claude-agent-mcp (v0.5/v0.6).
+"""Claude Code execution backend for claude-agent-mcp (v0.5/v0.6/v0.7.0).
 
 Executes tasks through the Claude Code CLI rather than direct API calls.
 This allows operators who have Claude Code installed (and authenticated via
@@ -13,7 +13,7 @@ Implementation:
     CLI-backed. Invokes `claude --print "<prompt>"` as a subprocess and
     collects stdout as the normalized output text.
 
-Capabilities (v0.5/v0.6):
+Capabilities (v0.5/v0.6/v0.7.0):
     - supports_downstream_tools: False — federation tools are not forwarded.
     - supports_structured_tool_use: False — no agentic tool-use loop.
     - supports_native_multiturn: False — single invocation per call.
@@ -21,6 +21,8 @@ Capabilities (v0.5/v0.6):
     - supports_structured_messages: False — history reconstructed as text.
     - supports_workspace_assumptions: True — CLI runs in local environment.
     - supports_limited_downstream_tools: True — text-based tool description injection (v0.6, opt-in).
+    - supports_structured_continuation_context: True — uses SessionContinuationContext (v0.7.0).
+    - supports_continuation_window_policy: True — respects ContinuationWindowPolicy (v0.7.0).
 
 Context reconstruction (v0.5):
     Continuation history is rendered in a structured format with clear role
@@ -41,6 +43,18 @@ Continuation prompt (v0.6):
     When is_continuation=True, the prompt uses [Continuation Session] framing
     instead of [Session Context], and the [Instructions] section emphasizes
     resuming from where the session left off.
+
+Structured continuation context (v0.7.0):
+    When continuation_context (SessionContinuationContext) is provided, the
+    backend renders a deterministic structured prompt using section-based
+    formatting. Empty sections are omitted. The structured rendering supersedes
+    the flat session_summary/conversation_history approach for continuation calls.
+
+    Sections rendered (when non-empty):
+      [System], [Continuation Session], [Session Summary],
+      [Recent Interaction State], [Relevant Warnings],
+      [Tool Forwarding Context], [Active Constraints],
+      [Current Request], [Instructions]
 """
 
 from __future__ import annotations
@@ -144,7 +158,7 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
 
     @property
     def capabilities(self) -> BackendCapabilities:
-        """Declare claude_code backend capabilities (v0.5/v0.6)."""
+        """Declare claude_code backend capabilities (v0.5/v0.6/v0.7.0)."""
         return BackendCapabilities(
             supports_downstream_tools=False,
             supports_structured_tool_use=False,
@@ -153,6 +167,8 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
             supports_structured_messages=False,
             supports_workspace_assumptions=True,
             supports_limited_downstream_tools=True,
+            supports_structured_continuation_context=True,
+            supports_continuation_window_policy=True,
         )
 
     def _find_cli(self) -> str | None:
@@ -364,6 +380,135 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
 
         return "\n".join(lines)
 
+    def _build_continuation_prompt(
+        self,
+        system_prompt: str,
+        task: str,
+        continuation_context: Any,
+        tools: list[dict] | None = None,
+    ) -> str:
+        """Build a structured continuation prompt from a SessionContinuationContext (v0.7.0).
+
+        Renders only non-empty sections in deterministic order:
+          [System], [Continuation Session], [Session Summary],
+          [Recent Interaction State], [Relevant Warnings],
+          [Tool Forwarding Context], [Active Constraints],
+          [Current Request], [Instructions]
+
+        Args:
+            system_prompt: System prompt from the active profile.
+            task: The current user request/message.
+            continuation_context: SessionContinuationContext (typed as Any to
+                avoid import-time circular dependency; validated at call site).
+            tools: Optional list of compatible tool dicts for the [Available Tools] section.
+
+        Returns:
+            Rendered prompt string with sections separated by _SECTION_SEP.
+        """
+        parts: list[str] = []
+
+        # [System]
+        if system_prompt and system_prompt.strip():
+            parts.append(f"[System]\n{system_prompt.strip()}")
+
+        # [Continuation Session] — metadata header
+        session_lines: list[str] = [
+            "[Continuation Session]",
+            f"Session: {continuation_context.session_id}",
+            f"Reconstruction: {continuation_context.reconstruction_version}",
+        ]
+        if continuation_context.render_stats:
+            stats = continuation_context.render_stats
+            session_lines.append(
+                f"Context: {stats.turns_included} turn(s) included"
+                + (f", {stats.turns_omitted} omitted" if stats.turns_omitted else "")
+            )
+        parts.append("\n".join(session_lines))
+
+        # [Session Summary]
+        if continuation_context.session_summary and continuation_context.session_summary.strip():
+            parts.append(
+                f"[Session Summary]\n{continuation_context.session_summary.strip()}"
+            )
+
+        # [Recent Interaction State]
+        user_reqs = continuation_context.recent_user_requests
+        agent_outs = continuation_context.recent_agent_outputs
+        if user_reqs or agent_outs:
+            interaction_lines: list[str] = ["[Recent Interaction State]"]
+            # Interleave user/agent pairs (older first, most recent last)
+            pairs = list(zip(user_reqs, agent_outs))
+            for user_msg, agent_msg in pairs:
+                user_content = user_msg[:CONTENT_MAX_CHARS]
+                if len(user_msg) > CONTENT_MAX_CHARS:
+                    user_content += " [truncated]"
+                agent_content = agent_msg[:CONTENT_MAX_CHARS]
+                if len(agent_msg) > CONTENT_MAX_CHARS:
+                    agent_content += " [truncated]"
+                interaction_lines.append(f"[User]\n{user_content}")
+                interaction_lines.append(f"[Assistant]\n{agent_content}")
+            # If there are extra user messages without paired agent outputs, include them
+            if len(user_reqs) > len(agent_outs):
+                for user_msg in user_reqs[len(agent_outs):]:
+                    user_content = user_msg[:CONTENT_MAX_CHARS]
+                    if len(user_msg) > CONTENT_MAX_CHARS:
+                        user_content += " [truncated]"
+                    interaction_lines.append(f"[User]\n{user_content}")
+            parts.append("\n\n".join(interaction_lines))
+
+        # [Available Tools] — compatible tool descriptions (v0.6)
+        if tools:
+            parts.append(self._build_tool_descriptions_section(tools))
+
+        # [Relevant Warnings]
+        relevant_warnings = [
+            w for w in continuation_context.relevant_warnings
+            if hasattr(w, "relevance") and str(w.relevance) in {
+                "continuation_relevant", "WarningRelevance.continuation_relevant"
+            }
+        ]
+        if relevant_warnings:
+            warning_lines: list[str] = ["[Relevant Warnings]"]
+            for w in relevant_warnings:
+                warning_lines.append(f"- {w.message}")
+            parts.append("\n".join(warning_lines))
+
+        # [Tool Forwarding Context]
+        fwd = continuation_context.forwarding_history
+        if fwd:
+            fwd_lines: list[str] = [
+                "[Tool Forwarding Context]",
+                f"Mode: {fwd.forwarding_mode}",
+            ]
+            if fwd.compatible_tool_names:
+                fwd_lines.append(f"Forwarded: {', '.join(fwd.compatible_tool_names)}")
+            if fwd.dropped_tool_names:
+                fwd_lines.append(f"Dropped: {', '.join(fwd.dropped_tool_names)}")
+            if fwd.recent_drop_reasons:
+                for reason in fwd.recent_drop_reasons:
+                    fwd_lines.append(f"Drop reason: {reason}")
+            parts.append("\n".join(fwd_lines))
+
+        # [Active Constraints]
+        constraints = continuation_context.active_constraints
+        if constraints:
+            constraint_lines: list[str] = ["[Active Constraints]"]
+            for key, value in constraints.items():
+                constraint_lines.append(f"{key}: {value}")
+            parts.append("\n".join(constraint_lines))
+
+        # [Current Request]
+        parts.append(f"[Current Request]\n{task.strip()}")
+
+        # [Instructions]
+        parts.append(
+            "[Instructions]\nYou are continuing this session. "
+            "Resume from where you left off, building on the session summary "
+            "and recent interaction state above."
+        )
+
+        return _SECTION_SEP.join(parts)
+
     def _build_structured_prompt(
         self,
         system_prompt: str,
@@ -478,12 +623,20 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
         conversation_history: list[dict[str, Any]] | None = None,
         session_summary: str | None = None,
         is_continuation: bool = False,
+        continuation_context: Any = None,
     ) -> NormalizedProviderResult:
         """Execute via Claude Code CLI in print mode.
 
         Builds a structured prompt from system_prompt + session summary +
         conversation history (bounded) + task, then invokes
         `claude --print <prompt>` and captures stdout.
+
+        Structured continuation context (v0.7.0):
+            When continuation_context (SessionContinuationContext) is provided
+            and is_continuation=True, the backend renders using
+            _build_continuation_prompt() which produces a deterministic
+            section-based prompt. This supersedes the flat session_summary /
+            conversation_history approach.
 
         Limited tool forwarding (v0.6):
             When config.claude_code_enable_limited_tool_forwarding is True and
@@ -538,14 +691,24 @@ class ClaudeCodeExecutionBackend(ExecutionBackend):
                     "Switch to the 'api' backend to use federation tools."
                 )
 
-        prompt, truncated = self._build_structured_prompt(
-            system_prompt=system_prompt,
-            task=task,
-            conversation_history=conversation_history,
-            session_summary=session_summary,
-            tools=prompt_tools,
-            is_continuation=is_continuation,
-        )
+        # v0.7.0: Use structured continuation rendering when context is provided.
+        truncated = False
+        if continuation_context is not None and is_continuation:
+            prompt = self._build_continuation_prompt(
+                system_prompt=system_prompt,
+                task=task,
+                continuation_context=continuation_context,
+                tools=prompt_tools,
+            )
+        else:
+            prompt, truncated = self._build_structured_prompt(
+                system_prompt=system_prompt,
+                task=task,
+                conversation_history=conversation_history,
+                session_summary=session_summary,
+                tools=prompt_tools,
+                is_continuation=is_continuation,
+            )
 
         if truncated:
             warnings.append(

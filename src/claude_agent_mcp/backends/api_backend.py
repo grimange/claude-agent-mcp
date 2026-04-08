@@ -7,7 +7,7 @@ This is the default backend and preserves existing v0.1–v0.3 behavior.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any  # noqa: F401 — Any used in execute() signature
 
 from claude_agent_mcp.backends.base import BackendCapabilities, ExecutionBackend, ToolExecutor
 from claude_agent_mcp.errors import ExecutionBackendAuthError, ExecutionBackendConfigError
@@ -71,14 +71,17 @@ class ApiExecutionBackend(ExecutionBackend):
         conversation_history: list[dict[str, Any]] | None = None,
         session_summary: str | None = None,
         is_continuation: bool = False,
+        continuation_context: Any = None,
     ) -> "NormalizedProviderResult":
         """Execute via Anthropic Messages API.
 
         Routes to run_with_tools if tools are provided, otherwise run().
 
-        Note: is_continuation is accepted for interface compatibility (v0.6) but is
-        ignored — the API backend handles multi-turn conversation natively via the
-        conversation_history parameter.
+        Note: is_continuation and continuation_context are accepted for interface
+        compatibility (v0.6/v0.7.0) but are ignored — the API backend handles
+        multi-turn conversation natively via the conversation_history parameter.
+        continuation_context is meaningful only for backends without native
+        multi-turn support (e.g., claude_code).
         """
         if tools and tool_executor:
             return await self._adapter.run_with_tools(

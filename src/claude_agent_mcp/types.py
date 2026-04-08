@@ -50,6 +50,23 @@ class EventType(str, Enum):
     downstream_tool_catalog_resolved = "downstream_tool_catalog_resolved"
     downstream_tool_invocation = "downstream_tool_invocation"
     downstream_tool_result = "downstream_tool_result"
+    # Continuation observability events (v0.7.0)
+    session_continuation_context_built = "session_continuation_context_built"
+    session_continuation_context_truncated = "session_continuation_context_truncated"
+    session_continuation_prompt_rendered = "session_continuation_prompt_rendered"
+
+
+class WarningRelevance(str, Enum):
+    """Classifies a warning for carry-forward relevance in continuation context (v0.7.0)."""
+
+    continuation_relevant = "continuation_relevant"
+    """Warning is relevant to continued execution — carry it forward."""
+
+    operator_only = "operator_only"
+    """Warning is for operator awareness only — do not include in continuation prompts."""
+
+    request_local = "request_local"
+    """Warning is specific to a single request and should not carry forward."""
 
 
 class ToolClass(str, Enum):
@@ -259,3 +276,80 @@ class NormalizedVerificationResult(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
     restrictions: list[str] = Field(default_factory=list)
     output_text: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Continuation context models (v0.7.0)
+# ---------------------------------------------------------------------------
+
+
+class ContinuationRelevantWarning(BaseModel):
+    """A warning classified for carry-forward relevance in continuation prompts."""
+
+    message: str
+    relevance: WarningRelevance
+    source: str
+    """Source label, e.g. 'tool_downgrade', 'history_truncation'."""
+
+
+class ForwardingContinuationSummary(BaseModel):
+    """Compact summary of prior forwarding decisions for continuation context."""
+
+    forwarding_mode: str
+    """One of: 'limited_text_injection', 'disabled', 'full', 'none'."""
+
+    compatible_tool_names: list[str] = Field(default_factory=list)
+    dropped_tool_names: list[str] = Field(default_factory=list)
+    recent_drop_reasons: list[str] = Field(default_factory=list)
+
+
+class ContinuationWindowPolicy(BaseModel):
+    """Controls how much prior context is included in continuation reconstruction."""
+
+    max_recent_turns: int = 5
+    """Maximum number of recent user/assistant turn pairs to include."""
+
+    max_warnings: int = 3
+    """Maximum number of warnings to carry forward."""
+
+    max_forwarding_events: int = 3
+    """Maximum number of forwarding events to summarize."""
+
+    include_verification_context: bool = True
+    """Whether to include verification outcome context."""
+
+    include_tool_downgrade_context: bool = True
+    """Whether to include prior tool downgrade warnings in continuation."""
+
+
+class ContinuationRenderStats(BaseModel):
+    """Metadata about what was included in a continuation reconstruction."""
+
+    turns_included: int
+    turns_omitted: int
+    warnings_included: int
+    warnings_omitted: int
+    forwarding_events_included: int
+    forwarding_events_omitted: int
+    reconstruction_version: str
+
+
+class SessionContinuationContext(BaseModel):
+    """Structured continuation package built from persisted session state (v0.7.0).
+
+    Produced by ContinuationContextBuilder and passed to the execution backend.
+    Backends that support structured continuation context use this to render
+    a deterministic, inspectable continuation prompt.
+    """
+
+    session_id: str
+    is_continuation: bool
+    session_summary: str | None = None
+    recent_user_requests: list[str] = Field(default_factory=list)
+    recent_agent_outputs: list[str] = Field(default_factory=list)
+    relevant_warnings: list[ContinuationRelevantWarning] = Field(default_factory=list)
+    forwarding_history: ForwardingContinuationSummary | None = None
+    active_constraints: dict[str, Any] = Field(default_factory=dict)
+    continuity_notes: list[str] = Field(default_factory=list)
+    reconstruction_version: str = "v0.7.0"
+    render_stats: ContinuationRenderStats | None = None

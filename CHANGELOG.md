@@ -7,6 +7,132 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.0] — 2026-04-08
+
+### Claude Code session continuity track release
+
+This release advances the `claude_code` backend from ad hoc history reconstruction
+toward a structured, deterministic, and inspectable continuation model. No new public
+MCP tools, profiles, or session semantics were added. All v0.6 MCP tool contracts and
+response envelopes are unchanged. The `api` backend is unaffected and does not regress.
+
+### Added
+
+- **`SessionContinuationContext` model** (`types.py`) — structured continuation package
+  built from persisted session events before each `agent_continue_session` call. Fields:
+  `session_id`, `is_continuation`, `session_summary`, `recent_user_requests`,
+  `recent_agent_outputs`, `relevant_warnings`, `forwarding_history`,
+  `active_constraints`, `continuity_notes`, `reconstruction_version`, `render_stats`.
+- **`ContinuationWindowPolicy` model** (`types.py`) — configurable bounds for how much
+  prior context is included in continuation reconstruction:
+  `max_recent_turns` (default 5), `max_warnings` (default 3),
+  `max_forwarding_events` (default 3), `include_verification_context` (default true),
+  `include_tool_downgrade_context` (default true).
+- **`ContinuationRenderStats` model** (`types.py`) — metadata about what was included
+  and omitted: `turns_included`, `turns_omitted`, `warnings_included`,
+  `warnings_omitted`, `forwarding_events_included`, `forwarding_events_omitted`,
+  `reconstruction_version`.
+- **`ContinuationRelevantWarning` model** (`types.py`) — a warning with a `WarningRelevance`
+  classification (`continuation_relevant`, `operator_only`, `request_local`) and a
+  `source` label. Only `continuation_relevant` warnings appear in continuation prompts.
+- **`ForwardingContinuationSummary` model** (`types.py`) — compact summary of prior
+  forwarding decisions: `forwarding_mode`, `compatible_tool_names`, `dropped_tool_names`,
+  `recent_drop_reasons`. Avoids re-dumping the full tool catalog on every continuation.
+- **`WarningRelevance` enum** (`types.py`) — three-level classification for warning
+  carry-forward policy.
+- **Three new `EventType` values** (`types.py`) — `session_continuation_context_built`,
+  `session_continuation_context_truncated`, `session_continuation_prompt_rendered`.
+  Recorded for each continuation call to make reconstruction decisions inspectable.
+- **`ContinuationContextBuilder` class** (`runtime/continuation_builder.py`, new file) —
+  stateless pipeline that derives a `SessionContinuationContext` from persisted session
+  events and a `ContinuationWindowPolicy`. Key static methods: `build_policy(config)`,
+  `build_context(session, events, policy)`. Deterministic: identical session state
+  produces identical output.
+- **`_build_continuation_prompt()` method** (`claude_code_backend.py`) — renders
+  a structured, section-based continuation prompt from `SessionContinuationContext`.
+  Sections (when non-empty, in canonical order): `[System]`, `[Continuation Session]`,
+  `[Session Summary]`, `[Recent Interaction State]`, `[Relevant Warnings]`,
+  `[Tool Forwarding Context]`, `[Active Constraints]`, `[Current Request]`,
+  `[Instructions]`. Empty sections are omitted deterministically.
+- **`supports_structured_continuation_context` capability flag** (`backends/base.py`) —
+  `claude_code` backend declares `True`; `api` backend declares `False` (uses native
+  multi-turn via `conversation_history`).
+- **`supports_continuation_window_policy` capability flag** (`backends/base.py`) —
+  `claude_code` backend declares `True`; `api` backend declares `False`.
+- **Five new config fields** (`config.py`):
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_TURNS` (int, default 5)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_WARNINGS` (int, default 3)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_FORWARDING_EVENTS` (int, default 3)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_VERIFICATION_CONTEXT` (bool, default true)
+  - `CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_TOOL_DOWNGRADE_CONTEXT` (bool, default true)
+- **Tests** — `tests/test_v07_continuation.py` (62 new tests) covering: policy
+  construction, context building, truncation behavior, warning classification and
+  filtering, forwarding summarization, capability flags, cross-backend contract,
+  prompt section rendering, section omission, determinism, and v0.6 regression.
+  Total test count: 287 (up from 225).
+- **Docs** — `docs/claude-code-backend.md` and `docs/backend-capability-matrix.md`
+  updated to v0.7.0 with structured continuation model, warning carry-forward rules,
+  forwarding continuity, continuation observability events, and updated capability tables.
+
+### Changed
+
+- `runtime/workflow_executor.py` — `continue_session()` now builds a
+  `ContinuationWindowPolicy` from config, calls `ContinuationContextBuilder.build_context()`
+  to produce a `SessionContinuationContext`, records `session_continuation_context_built`
+  (and `session_continuation_context_truncated` when applicable) events before execution,
+  passes `continuation_context` to `backend.execute()`, and records
+  `session_continuation_prompt_rendered` after execution. All paths preserve existing
+  `conversation_history` for the `api` backend.
+- `backends/claude_code_backend.py` — `execute()` accepts new `continuation_context`
+  kwarg. When `continuation_context` is provided and `is_continuation=True`, the backend
+  uses `_build_continuation_prompt()` instead of `_build_structured_prompt()`. When
+  `continuation_context` is `None`, existing v0.6 behavior is preserved unchanged.
+  Capabilities updated with the two new v0.7.0 flags.
+- `backends/api_backend.py` — `execute()` accepts `continuation_context` kwarg for
+  interface symmetry (ignored; API backend uses `conversation_history` natively).
+- `backends/base.py` — `BackendCapabilities` extended with
+  `supports_structured_continuation_context` and `supports_continuation_window_policy`
+  fields (both default `False`). `execute()` signature extended with optional
+  `continuation_context` parameter.
+
+### Warning carry-forward policy
+
+Warnings are now classified before being included in continuation prompts:
+
+| Classification | Carried forward by default | Examples |
+|---|---|---|
+| `continuation_relevant` | Yes | Tool downgrade events, verification outcomes |
+| `operator_only` | No | Stop-reason precision notices |
+| `request_local` | No | Per-request transient warnings |
+
+All warnings remain in the persisted session event log. Only classified-as-relevant
+warnings appear in the `[Relevant Warnings]` section of continuation prompts.
+
+### Backend capability declarations (v0.7.0)
+
+| Capability | `api` | `claude_code` |
+|---|---|---|
+| `supports_downstream_tools` | Yes | No |
+| `supports_structured_tool_use` | Yes | No |
+| `supports_native_multiturn` | Yes | No |
+| `supports_rich_stop_reason` | Yes | No |
+| `supports_structured_messages` | Yes | No |
+| `supports_workspace_assumptions` | No | Yes |
+| `supports_limited_downstream_tools` | No | Yes (opt-in) |
+| `supports_structured_continuation_context` | No | **Yes** (v0.7.0) |
+| `supports_continuation_window_policy` | No | **Yes** (v0.7.0) |
+
+### Explicitly preserved limitations (v0.7.0)
+
+- Single-turn per CLI invocation; no native multi-turn tool-use loop.
+- v0.7.0 improves *reconstruction quality* for continuation prompts — it does not
+  add native backend-persistent session state.
+- Limited tool forwarding remains text-based context only (tools cannot be invoked).
+- Full federation tool-use requires the `api` backend.
+- `stop_reason` is always `backend_defaulted`.
+
+---
+
 ## [0.6.0] — 2026-04-08
 
 ### Claude Code capability-expansion track release

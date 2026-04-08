@@ -22,6 +22,13 @@ Execution backend variables (v0.4):
   CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT     — CLI timeout in seconds (default: 300)
   CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING  — Enable limited tool forwarding for claude_code backend (default: false)
 
+Continuation window policy variables (v0.7.0):
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_TURNS             — Max recent turns in continuation context (default: 5)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_WARNINGS          — Max warnings carried forward (default: 3)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_FORWARDING_EVENTS — Max forwarding events summarized (default: 3)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_VERIFICATION_CONTEXT       — Include verification outcomes in continuation (default: true)
+  CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_TOOL_DOWNGRADE_CONTEXT     — Include tool downgrade warnings in continuation (default: true)
+
 Federation variables (v0.3):
   CLAUDE_AGENT_MCP_FEDERATION_ENABLED   — Enable downstream federation (default: false)
   CLAUDE_AGENT_MCP_FEDERATION_CONFIG    — Path to JSON federation config file
@@ -139,6 +146,31 @@ class Config:
         ).strip().lower()
         self.claude_code_enable_limited_tool_forwarding: bool = (
             claude_code_limited_tool_forwarding_raw in {"true", "1", "yes"}
+        )
+
+        # Continuation window policy (v0.7.0) — conservative defaults
+        self.claude_code_max_continuation_turns: int = int(
+            _env("CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_TURNS", default="5").strip()
+        )
+        self.claude_code_max_continuation_warnings: int = int(
+            _env("CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_WARNINGS", default="3").strip()
+        )
+        self.claude_code_max_continuation_forwarding_events: int = int(
+            _env(
+                "CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_FORWARDING_EVENTS", default="3"
+            ).strip()
+        )
+        claude_code_include_verification_context_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_VERIFICATION_CONTEXT", default="true"
+        ).strip().lower()
+        self.claude_code_include_verification_context: bool = (
+            claude_code_include_verification_context_raw in {"true", "1", "yes"}
+        )
+        claude_code_include_tool_downgrade_context_raw = _env(
+            "CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_TOOL_DOWNGRADE_CONTEXT", default="true"
+        ).strip().lower()
+        self.claude_code_include_tool_downgrade_context: bool = (
+            claude_code_include_tool_downgrade_context_raw in {"true", "1", "yes"}
         )
 
         # --- Federation (v0.3) ---

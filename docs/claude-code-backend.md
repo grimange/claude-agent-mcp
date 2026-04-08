@@ -1,4 +1,4 @@
-# Claude Code Backend (v0.6)
+# Claude Code Backend (v0.7.0)
 
 ## Overview
 
@@ -35,6 +35,13 @@ export CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT=300
 
 # Optional (v0.6): enable limited downstream tool forwarding (default: false)
 export CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING=false
+
+# Optional (v0.7.0): continuation window policy
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_TURNS=5
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_WARNINGS=3
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_FORWARDING_EVENTS=3
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_VERIFICATION_CONTEXT=true
+export CLAUDE_AGENT_MCP_CLAUDE_CODE_INCLUDE_TOOL_DOWNGRADE_CONTEXT=true
 ```
 
 Do not set `ANTHROPIC_API_KEY` when using the Claude Code backend. The backend does not use it.
@@ -53,23 +60,29 @@ Authentication state is **not** verified at startup. An unauthenticated Claude C
 
 ---
 
-## How execution works (v0.6)
+## How execution works (v0.7.0)
 
 For each task, the Claude Code backend:
 
-1. Builds a **structured prompt** from system/profile instructions, session summary, bounded conversation history, optional compatible tool descriptions, and the current user task.
+1. Builds a **structured prompt** from system/profile instructions, session context, bounded conversation history, optional compatible tool descriptions, and the current user task.
 2. Invokes `claude --print <prompt>` as a subprocess.
 3. Collects stdout as the output text.
 4. Returns a `NormalizedProviderResult` with `stop_reason: backend_defaulted`.
 5. Emits warnings for any limitations that applied (truncation, tool filtering, stop-reason precision).
 
+For **continuation calls** (`agent_continue_session`), the runtime additionally:
+
+1. Builds a `SessionContinuationContext` from persisted session events using a `ContinuationWindowPolicy`.
+2. Renders a structured continuation prompt with deterministic section ordering.
+3. Records session events for operator inspection (`session_continuation_context_built`, `session_continuation_prompt_rendered`).
+
 ---
 
-## Context reconstruction (v0.6)
-
-Continuation context is rebuilt using a structured prompt format rather than a flat plain-text dump.
+## Context reconstruction (v0.7.0)
 
 ### Initial task prompt
+
+For new sessions (`agent_run_task`), the prompt uses this structure:
 
 ```
 [System]
@@ -100,12 +113,10 @@ Continuation context is rebuilt using a structured prompt format rather than a f
 Respond to the current request above. Use the conversation history and session context as background.
 ```
 
-### Continuation prompt (v0.6)
+### Structured continuation prompt (v0.7.0)
 
-When `is_continuation=True`, the prompt uses distinct framing to signal session resumption:
-
-- Section 2 uses `[Continuation Session]` instead of `[Session Context]`
-- The `[Instructions]` section emphasizes resuming from where the session left off
+For `agent_continue_session` calls, the backend uses a structured continuation context
+built deterministically from persisted session events. Empty sections are omitted.
 
 ```
 [System]
@@ -113,26 +124,100 @@ When `is_continuation=True`, the prompt uses distinct framing to signal session 
 
 ────────────────────────────────────────────────────────────
 [Continuation Session]
-<session summary from prior turns>
+Session: <session_id>
+Reconstruction: v0.7.0
+Context: N turn(s) included[, M omitted]
 
-...
+────────────────────────────────────────────────────────────
+[Session Summary]
+<session summary>
 
+────────────────────────────────────────────────────────────
+[Recent Interaction State]
+[User]
+<recent user request>
+
+[Assistant]
+<recent agent output>
+
+────────────────────────────────────────────────────────────
+[Relevant Warnings]
+- <continuation-relevant warning 1>
+- <continuation-relevant warning 2>
+
+────────────────────────────────────────────────────────────
+[Tool Forwarding Context]
+Mode: <forwarding_mode>
+Forwarded: <tool names>
+Dropped: <tool names>
+
+────────────────────────────────────────────────────────────
+[Active Constraints]
+working_directory: <path>
+profile: <profile>
+
+────────────────────────────────────────────────────────────
+[Current Request]
+<current user message>
+
+────────────────────────────────────────────────────────────
 [Instructions]
-You are continuing this session. Resume from where you left off, building on the prior conversation.
+You are continuing this session. Resume from where you left off, building on the session summary and recent interaction state above.
 ```
+
+Section ordering is deterministic. Empty sections are omitted entirely — operators can trust that the rendered prompt does not contain empty placeholders.
 
 ### Truncation policy
 
-To keep prompts bounded, only the most recent **10 user/assistant exchange pairs** are included in the history section. If truncation occurs:
+To keep prompts bounded, the continuation window policy controls what is included:
 
-- A warning is added to the response `warnings` array.
-- The session summary is included as the `[Session Context]` / `[Continuation Session]` section to preserve high-level continuity.
+| Policy field | Default | Description |
+|---|---|---|
+| `max_recent_turns` | 5 | Recent user/assistant turn pairs |
+| `max_warnings` | 3 | Continuation-relevant warnings |
+| `max_forwarding_events` | 3 | Forwarding decision events |
+| `include_verification_context` | true | Prior verification outcomes |
+| `include_tool_downgrade_context` | true | Prior tool downgrade events |
+
+When truncation occurs, the omission counts are recorded in a `session_continuation_context_truncated` session event and noted in the prompt's `[Continuation Session]` header.
 
 Individual message content is capped at **2000 characters** per message. Truncated content is marked with `[truncated]`.
 
 ---
 
-## Backend capabilities (v0.6)
+## Warning carry-forward (v0.7.0)
+
+Warnings are classified for continuation relevance before being included in prompts:
+
+| Classification | Meaning | Carried forward? |
+|---|---|---|
+| `continuation_relevant` | Affects capability interpretation in resumed execution | Yes (by default) |
+| `operator_only` | For operator awareness only; does not affect model behavior | No |
+| `request_local` | Specific to a single request | No |
+
+**Continuation-relevant warnings include:**
+- Prior tool downgrade events (when `include_tool_downgrade_context=true`)
+- Prior verification outcomes (when `include_verification_context=true`)
+
+All warnings remain in persisted session events. Only classified-as-relevant warnings appear in the continuation prompt's `[Relevant Warnings]` section.
+
+---
+
+## Continuation observability (v0.7.0)
+
+The following session events are recorded for each continuation call:
+
+| Event type | Contents | Purpose |
+|---|---|---|
+| `session_continuation_context_built` | policy, stats (included/omitted counts, version) | Operator audit: what was selected |
+| `session_continuation_context_truncated` | stats | Operator alert: context was truncated |
+| `session_continuation_prompt_rendered` | reconstruction_version | Confirms structured rendering was used |
+
+These events are visible via `agent_get_session` detail and the internal session event log.
+
+---
+
+## Backend capabilities (v0.7.0)
 
 The Claude Code backend declares the following capability profile:
 
@@ -145,8 +230,10 @@ The Claude Code backend declares the following capability profile:
 | `supports_structured_messages` | No | History reconstructed as labeled text |
 | `supports_workspace_assumptions` | Yes | CLI runs in the local environment |
 | `supports_limited_downstream_tools` | Yes | Text-based tool description injection (opt-in, v0.6) |
+| `supports_structured_continuation_context` | Yes | Uses `SessionContinuationContext` for continuation (v0.7.0) |
+| `supports_continuation_window_policy` | Yes | Respects `ContinuationWindowPolicy` bounds (v0.7.0) |
 
-These capabilities are used internally to emit accurate warnings and prevent unsupported forwarding paths.
+These capabilities are used internally to emit accurate warnings and select the appropriate rendering path.
 
 ---
 
@@ -168,13 +255,7 @@ Before injection, each tool is screened:
 
 Compatible tools are injected as an `[Available Tools]` section. Incompatible tools are dropped with a per-tool warning naming the tool and the reason.
 
-### When forwarding is disabled (default)
-
-A single consolidated warning is emitted listing that tools were not forwarded and advising the operator to switch to the `api` backend.
-
-### Verification profile
-
-The `verification` profile does not enable limited tool forwarding by default. Its conservative posture is preserved unless explicitly configured otherwise.
+Prior tool forwarding decisions are summarized in the `[Tool Forwarding Context]` section of continuation prompts.
 
 ---
 
@@ -194,16 +275,16 @@ Warnings appear in the `warnings` array of the canonical `AgentResponse` envelop
 
 ---
 
-## Known limitations (v0.6)
+## Known limitations (v0.7.0)
 
-These limitations remain after v0.6 capability expansion and are documented explicitly:
+These limitations remain after v0.7.0 continuity improvement and are documented explicitly:
 
-- **Single-turn per CLI invocation.** The Claude Code backend does not run a native multi-turn tool-use loop. Each call is one CLI invocation.
+- **No native multi-turn execution.** Each CLI invocation is single-shot. v0.7.0 improves continuation *context reconstruction* but does not add native multi-turn execution to the CLI.
+- **Not API-equivalent session continuity.** The structured continuation context improves determinism and operator visibility, but it is still a text reconstruction — not a native backend-persistent conversation state.
 - **Limited tool forwarding is text-only.** Even when enabled, tools are injected as text descriptions — not invoked. The model sees tool context but cannot call them.
-- **No full federation tool support.** Real tool invocation (structured `tool_use` / `tool_result` loop) is not available. Use the `api` backend for full federation tool-use.
-- **No rich stop reason.** The CLI does not expose stop semantics. `stop_reason` is always `backend_defaulted`. Do not write logic that depends on specific stop-reason values when using this backend.
-- **History is reconstructed text.** Context is rebuilt from the internal session store using labeled text sections, not structured Messages API objects.
-- **Model selection may fail.** The `--model` flag is passed to the CLI, but not all model identifiers may be accepted. If the CLI rejects the model, the invocation will fail with `claude_code_invocation_error`.
+- **No full federation tool support.** Real tool invocation is not available. Use the `api` backend for full federation tool-use.
+- **No rich stop reason.** `stop_reason` is always `backend_defaulted`.
+- **Model selection may fail.** The `--model` flag is passed to the CLI, but not all model identifiers may be accepted.
 
 For full capability comparison, see [backend-capability-matrix.md](backend-capability-matrix.md).
 
@@ -228,11 +309,15 @@ Increase `CLAUDE_AGENT_MCP_CLAUDE_CODE_TIMEOUT` (seconds). Default is 300.
 
 ### Response `warnings` contains truncation notice
 
-The session history exceeded the reconstruction limit. This is expected for long sessions. The session summary is used to preserve continuity. If precision is critical for a long session, consider using the `api` backend.
+The session history exceeded the reconstruction limit. This is expected for long sessions. The session summary is used to preserve continuity. Configure `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_CONTINUATION_TURNS` to increase the window (at the cost of longer prompts).
 
 ### Response `warnings` contains federation tool notice
 
 Federation tools were configured for this profile but the `claude_code` backend cannot forward them. Switch to the `api` backend if you need downstream tool-use.
+
+### Continuation context seems incomplete
+
+Check the `session_continuation_context_built` event via `agent_get_session` for `turns_omitted`, `warnings_omitted`, and `forwarding_events_omitted` counts. Adjust the continuation window policy env vars to include more context.
 
 ---
 
@@ -241,10 +326,10 @@ Federation tools were configured for this profile but the `claude_code` backend 
 | | `api` backend | `claude_code` backend |
 |---|---|---|
 | Auth | `ANTHROPIC_API_KEY` | `claude login` |
-| Multi-turn | Native (Messages API) | Single-shot CLI |
+| Multi-turn | Native (Messages API) | Single-shot CLI per call |
+| Continuation context | Structured messages array | Structured text reconstruction (v0.7.0) |
 | Federation tools | Supported | Not supported |
 | stop_reason | API-native | `backend_defaulted` |
-| Conversation history | Structured messages array | Reconstructed labeled text |
 | Recommended for | Server/CI deployments | Local Claude Code workflows |
 
 For the full capability matrix, see [backend-capability-matrix.md](backend-capability-matrix.md).

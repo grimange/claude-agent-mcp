@@ -30,6 +30,7 @@ from claude_agent_mcp.backends.base import ExecutionBackend
 from claude_agent_mcp.federation.invoker import DownstreamToolInvoker, build_invoker
 from claude_agent_mcp.federation.visibility import ToolVisibilityResolver
 from claude_agent_mcp.runtime.artifact_store import ArtifactStore
+from claude_agent_mcp.runtime.continuation_builder import ContinuationContextBuilder
 from claude_agent_mcp.runtime.policy_engine import PolicyEngine
 from claude_agent_mcp.runtime.profile_registry import Profile, ProfileRegistry
 from claude_agent_mcp.runtime.session_store import SessionStore
@@ -309,8 +310,49 @@ class WorkflowExecutor:
                 request_count_delta=1,
             )
 
-            # Reconstruct conversation history from session events
+            # Reconstruct conversation history from session events (for API backend)
             history = await self._build_conversation_history(req.session_id)
+
+            # v0.7.0: Build structured continuation context for backends that support it.
+            caps = self._backend.capabilities
+            continuation_context = None
+            if caps.supports_structured_continuation_context:
+                all_events = await self._sessions.get_events(req.session_id)
+                policy = ContinuationContextBuilder.build_policy(self._config)
+                continuation_context = ContinuationContextBuilder.build_context(
+                    session=session,
+                    events=all_events,
+                    policy=policy,
+                )
+                # Record continuation context built event
+                stats_dict = {}
+                if continuation_context.render_stats:
+                    s = continuation_context.render_stats
+                    stats_dict = {
+                        "turns_included": s.turns_included,
+                        "turns_omitted": s.turns_omitted,
+                        "warnings_included": s.warnings_included,
+                        "warnings_omitted": s.warnings_omitted,
+                        "forwarding_events_included": s.forwarding_events_included,
+                        "forwarding_events_omitted": s.forwarding_events_omitted,
+                        "reconstruction_version": s.reconstruction_version,
+                    }
+                await self._sessions.append_event(
+                    req.session_id,
+                    EventType.session_continuation_context_built,
+                    session.turn_count,
+                    {"policy": policy.model_dump(), "stats": stats_dict},
+                )
+                if continuation_context.render_stats and (
+                    continuation_context.render_stats.turns_omitted > 0
+                    or continuation_context.render_stats.warnings_omitted > 0
+                ):
+                    await self._sessions.append_event(
+                        req.session_id,
+                        EventType.session_continuation_context_truncated,
+                        session.turn_count,
+                        {"stats": stats_dict},
+                    )
 
             await self._sessions.append_event(
                 req.session_id, EventType.user_input, session.turn_count,
@@ -325,7 +367,6 @@ class WorkflowExecutor:
             visible_tools = self._visible_tool_dicts(session.profile)
 
             # Capability check: warn if tools are resolved but backend doesn't support them.
-            caps = self._backend.capabilities
             if visible_tools and not caps.supports_downstream_tools:
                 if (
                     caps.supports_limited_downstream_tools
@@ -352,6 +393,7 @@ class WorkflowExecutor:
                         conversation_history=history,
                         session_summary=session.summary_latest,
                         is_continuation=True,
+                        continuation_context=continuation_context,
                     )
                 else:
                     cap_warning = (
@@ -375,6 +417,7 @@ class WorkflowExecutor:
                         conversation_history=history,
                         session_summary=session.summary_latest,
                         is_continuation=True,
+                        continuation_context=continuation_context,
                     )
             elif visible_tools and invoker is not None:
                 await self._sessions.append_event(
@@ -390,6 +433,7 @@ class WorkflowExecutor:
                     conversation_history=history,
                     session_summary=session.summary_latest,
                     is_continuation=True,
+                    continuation_context=continuation_context,
                 )
             else:
                 result = await self._backend.execute(
@@ -399,6 +443,16 @@ class WorkflowExecutor:
                     conversation_history=history,
                     session_summary=session.summary_latest,
                     is_continuation=True,
+                    continuation_context=continuation_context,
+                )
+
+            # v0.7.0: Record that continuation prompt was rendered
+            if continuation_context is not None:
+                await self._sessions.append_event(
+                    req.session_id,
+                    EventType.session_continuation_prompt_rendered,
+                    session.turn_count,
+                    {"reconstruction_version": continuation_context.reconstruction_version},
                 )
 
             warnings.extend(result.warnings)

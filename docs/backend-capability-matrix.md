@@ -1,4 +1,4 @@
-# Backend Capability Matrix (v0.6)
+# Backend Capability Matrix (v0.7.0)
 
 This document describes the capability flags declared by each execution backend in `claude-agent-mcp`. These flags are used internally by the workflow executor to emit warnings and suppress unsupported execution paths. They are not exposed in MCP tool contracts.
 
@@ -15,6 +15,8 @@ This document describes the capability flags declared by each execution backend 
 | `supports_structured_messages` | Backend accepts structured role/content message objects |
 | `supports_workspace_assumptions` | Backend can operate on a local workspace directory natively |
 | `supports_limited_downstream_tools` | Backend supports text-based tool description injection (v0.6, opt-in) |
+| `supports_structured_continuation_context` | Backend accepts and uses `SessionContinuationContext` for continuation (v0.7.0) |
+| `supports_continuation_window_policy` | Backend respects `ContinuationWindowPolicy` for bounded reconstruction (v0.7.0) |
 
 ---
 
@@ -29,6 +31,8 @@ This document describes the capability flags declared by each execution backend 
 | `supports_structured_messages` | **Yes** | No |
 | `supports_workspace_assumptions` | No | **Yes** |
 | `supports_limited_downstream_tools` | No | **Yes** (opt-in) |
+| `supports_structured_continuation_context` | No | **Yes** (v0.7.0) |
+| `supports_continuation_window_policy` | No | **Yes** (v0.7.0) |
 
 ---
 
@@ -66,9 +70,27 @@ Enabled opt-in via `CLAUDE_AGENT_MCP_CLAUDE_CODE_LIMITED_TOOL_FORWARDING=true`. 
 
 The `api` backend has `supports_limited_downstream_tools=False` because it supports full tool invocation (`supports_downstream_tools=True`) — the limited flag is irrelevant.
 
+### `supports_structured_continuation_context` (v0.7.0)
+
+When `True` (claude_code): the backend accepts a `SessionContinuationContext` object and uses it to render a deterministic, section-based continuation prompt. This supersedes the flat `session_summary` / conversation history approach for continuation calls.
+
+When `False` (api): the API backend uses native multi-turn conversation state (`conversation_history` array). Structured continuation context is not needed and is ignored.
+
+### `supports_continuation_window_policy` (v0.7.0)
+
+When `True` (claude_code): the backend respects a `ContinuationWindowPolicy` that bounds how much prior context is included in continuation reconstruction. Policy parameters include:
+
+- `max_recent_turns`: how many turn pairs to include (default: 5)
+- `max_warnings`: how many continuation-relevant warnings to carry forward (default: 3)
+- `max_forwarding_events`: how many forwarding events to summarize (default: 3)
+- `include_verification_context`: whether to carry forward prior verification verdicts (default: true)
+- `include_tool_downgrade_context`: whether to carry forward tool downgrade warnings (default: true)
+
+When `False` (api): not applicable. The API backend manages context natively.
+
 ---
 
-## Warnings emitted by the workflow executor (v0.6)
+## Warnings emitted by the workflow executor (v0.7.0)
 
 The workflow executor checks backend capabilities before execution and emits warnings to the response `warnings` array when mismatches are detected.
 
@@ -82,6 +104,20 @@ The workflow executor checks backend capabilities before execution and emits war
 
 ---
 
+## Session events for continuation observability (v0.7.0)
+
+For continuation calls on backends with `supports_structured_continuation_context=True`, the following session events are recorded:
+
+| Event type | Contents |
+|---|---|
+| `session_continuation_context_built` | policy used, counts of included/omitted turns/warnings/forwarding events, reconstruction version |
+| `session_continuation_context_truncated` | same stats, recorded only when truncation occurred |
+| `session_continuation_prompt_rendered` | reconstruction version |
+
+These events are accessible via `agent_get_session` and the internal event log.
+
+---
+
 ## Implementation reference
 
 Capabilities are declared as a frozen `BackendCapabilities` dataclass in `src/claude_agent_mcp/backends/base.py`. Each backend implements the `capabilities` property.
@@ -89,7 +125,7 @@ Capabilities are declared as a frozen `BackendCapabilities` dataclass in `src/cl
 ```python
 from claude_agent_mcp.backends.base import BackendCapabilities
 
-# claude_code backend declaration (v0.6)
+# claude_code backend declaration (v0.7.0)
 BackendCapabilities(
     supports_downstream_tools=False,
     supports_structured_tool_use=False,
@@ -97,7 +133,9 @@ BackendCapabilities(
     supports_rich_stop_reason=False,
     supports_structured_messages=False,
     supports_workspace_assumptions=True,
-    supports_limited_downstream_tools=True,  # v0.6, opt-in
+    supports_limited_downstream_tools=True,           # v0.6, opt-in
+    supports_structured_continuation_context=True,    # v0.7.0
+    supports_continuation_window_policy=True,         # v0.7.0
 )
 
 # api backend declaration
@@ -108,7 +146,9 @@ BackendCapabilities(
     supports_rich_stop_reason=True,
     supports_structured_messages=True,
     supports_workspace_assumptions=False,
-    supports_limited_downstream_tools=False,  # full support, not limited
+    supports_limited_downstream_tools=False,          # full support, not limited
+    supports_structured_continuation_context=False,   # API backend has native multi-turn
+    supports_continuation_window_policy=False,        # not applicable
 )
 ```
 
@@ -118,3 +158,4 @@ BackendCapabilities(
 
 - v0.5: Capability matrix introduced. Backend limitations declared programmatically and surfaced as runtime warnings.
 - v0.6: `supports_limited_downstream_tools` added. Claude Code backend can now inject compatible tool descriptions as text (opt-in). Continuation prompts use distinct `[Continuation Session]` framing.
+- v0.7.0: `supports_structured_continuation_context` and `supports_continuation_window_policy` added. Claude Code backend uses a deterministic `SessionContinuationContext` for all continuation calls. Warning carry-forward is classified and bounded. Forwarding history is summarized. Continuation reconstruction decisions are recorded as inspectable session events.

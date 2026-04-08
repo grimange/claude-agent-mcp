@@ -47,6 +47,12 @@ class BackendCapabilities:
     supports_limited_downstream_tools: bool = False
     """Backend supports limited downstream tool description injection (text-based, not invocable)."""
 
+    supports_structured_continuation_context: bool = False
+    """Backend accepts and uses a structured SessionContinuationContext for continuation (v0.7.0)."""
+
+    supports_continuation_window_policy: bool = False
+    """Backend respects a configurable ContinuationWindowPolicy for bounded reconstruction (v0.7.0)."""
+
 
 class ExecutionBackend(ABC):
     """Pluggable execution backend interface.
@@ -108,6 +114,7 @@ class ExecutionBackend(ABC):
         conversation_history: list[dict[str, Any]] | None = None,
         session_summary: str | None = None,
         is_continuation: bool = False,
+        continuation_context: Any = None,
     ) -> "NormalizedProviderResult":
         """Execute a task (or continue a session) and return a normalized result.
 
@@ -122,6 +129,10 @@ class ExecutionBackend(ABC):
                 backends that reconstruct context from text (e.g. claude_code).
             is_continuation: When True, the backend may use a continuation-optimized
                 prompt structure.
+            continuation_context: Optional SessionContinuationContext for backends
+                that support structured continuation (v0.7.0). When provided and the
+                backend supports it, this supersedes session_summary and
+                conversation_history for prompt reconstruction.
 
         Returns:
             NormalizedProviderResult — no backend-specific types.
