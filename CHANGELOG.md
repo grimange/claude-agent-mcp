@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.1] — 2026-04-11
+
+### Documentation refresh
+
+- **`README.md`** — full revision: clarified feature descriptions, updated installation steps,
+  expanded backend usage section, improved structure and readability.
+- **`docs/codex-setup.md`** — new guide covering Codex-specific setup, configuration, and
+  integration patterns for the `claude_code` backend.
+
+---
+
 ## [1.0.0] — 2026-04-08
 
 ### Stabilization, operator UX, and production-hardening release
