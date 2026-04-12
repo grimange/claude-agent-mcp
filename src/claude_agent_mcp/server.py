@@ -42,10 +42,78 @@ from claude_agent_mcp.tools.get_session import handle_get_session
 from claude_agent_mcp.tools.list_sessions import handle_list_sessions
 from claude_agent_mcp.tools.run_task import handle_run_task
 from claude_agent_mcp.tools.verify_task import handle_verify_task
+from claude_agent_mcp.types import RuntimeRestrictionContract
 
 logger = get_logger(__name__)
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+
+# ---------------------------------------------------------------------------
+# APNTalk restriction contract (v1.1.0)
+# ---------------------------------------------------------------------------
+
+# The exact admitted tool pair for APNTalk verification mode.
+_APNTALK_ADMITTED_TOOLS: frozenset[str] = frozenset({
+    "agent_get_runtime_status",
+    "agent_verify_task",
+})
+
+
+def _build_apntalk_contract(allowed_dirs: list[str]) -> RuntimeRestrictionContract:
+    """Return the resolved APNTalk restriction contract.
+
+    allowed_dirs must be pre-normalized absolute paths from config.allowed_dirs.
+    """
+    return RuntimeRestrictionContract(
+        mode="apntalk_verification",
+        policy_mode="verification_only",
+        authority_mode="advisory_only",
+        tool_surface_mode="restricted",
+        active_profile="apntalk_verification",
+        required_backend="claude_code",
+        required_transport="stdio",
+        allowed_tools=sorted(_APNTALK_ADMITTED_TOOLS),
+        allowed_directories=allowed_dirs,
+        restriction_contract_id="apntalk_verification_v1",
+        restriction_contract_version=1,
+        fail_closed=True,
+    )
+
+
+def _apntalk_startup_check(
+    config: Any,
+    contract: RuntimeRestrictionContract,
+) -> list[str]:
+    """Validate all APNTalk contract requirements. Return non-compliance reasons.
+
+    An empty list means the contract is fully satisfied and startup may proceed.
+    A non-empty list means at least one requirement is not met.
+    """
+    reasons: list[str] = []
+
+    if config.execution_backend != contract.required_backend:
+        reasons.append(
+            f"backend={config.execution_backend!r} does not match "
+            f"required_backend={contract.required_backend!r}"
+        )
+    if config.transport != contract.required_transport:
+        reasons.append(
+            f"transport={config.transport!r} does not match "
+            f"required_transport={contract.required_transport!r}"
+        )
+    if not contract.allowed_directories:
+        reasons.append(
+            "allowed_directories is empty — bounded filesystem scope cannot be proven"
+        )
+    # Ensure every allowed dir is an absolute path (basic sanity)
+    for d in contract.allowed_directories:
+        if not d.startswith("/") and not (len(d) > 1 and d[1] == ":"):
+            reasons.append(
+                f"allowed_directory {d!r} is not an absolute path — "
+                "bounded directories must be normalized absolute paths"
+            )
+
+    return reasons
 
 # ---------------------------------------------------------------------------
 # Tool schemas (JSON Schema for each v0.1 tool)
@@ -213,22 +281,50 @@ def build_server(
     artifact_store: ArtifactStore,
     executor: WorkflowExecutor,
     status_inspector: RuntimeStatusInspector | None = None,
+    restriction_contract: RuntimeRestrictionContract | None = None,
 ) -> Server:
     """Build and return the MCP Server with all tools registered.
 
     This function is transport-agnostic. Both stdio and streamable-http
     transports call this to obtain the same server instance.
+
+    When restriction_contract is provided (APNTalk mode), the server publishes
+    only the tools named in contract.allowed_tools.  No other tools are
+    registered or callable — the restriction is enforced at this layer, not
+    downstream.
     """
     server = Server("claude-agent-mcp")
 
+    # Resolve the actual published tool set.
+    if restriction_contract is not None:
+        admitted = frozenset(restriction_contract.allowed_tools)
+        active_tool_definitions = [t for t in TOOL_DEFINITIONS if t.name in admitted]
+        active_tool_names = frozenset(t.name for t in active_tool_definitions)
+    else:
+        active_tool_definitions = list(TOOL_DEFINITIONS)
+        active_tool_names = frozenset(t.name for t in TOOL_DEFINITIONS)
+
     @server.list_tools()
     async def list_tools() -> list[Tool]:
-        return TOOL_DEFINITIONS
+        return active_tool_definitions
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         logger.info("Tool called: %s", name)
         arguments = arguments or {}
+
+        # Reject calls to tools outside the active surface.
+        if name not in active_tool_names:
+            result = {
+                "error": {
+                    "code": "tool_not_admitted",
+                    "message": (
+                        f"Tool '{name}' is not admitted in the current runtime mode. "
+                        f"Admitted tools: {sorted(active_tool_names)}"
+                    ),
+                }
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         if name == "agent_run_task":
             result = await handle_run_task(executor, arguments)
@@ -242,7 +338,10 @@ def build_server(
             result = await handle_verify_task(executor, arguments)
         elif name == "agent_get_runtime_status":
             if status_inspector is not None:
-                snapshot = status_inspector.build_snapshot()
+                snapshot = status_inspector.build_snapshot(
+                    restriction_contract=restriction_contract,
+                    exposed_tool_names=sorted(active_tool_names),
+                )
                 result = snapshot.model_dump()
             else:
                 result = {"error": {"code": "inspector_unavailable", "message": "Runtime status inspector not initialized"}}
@@ -266,8 +365,35 @@ def build_server(
 async def _setup_runtime(config):
     """Open stores and build executor.
 
-    Returns (session_store, artifact_store, executor, status_inspector).
+    Returns (session_store, artifact_store, executor, status_inspector, restriction_contract).
+    restriction_contract is None in standard mode.
     """
+    # --- APNTalk mode startup self-check (v1.1.0) ---
+    restriction_contract: RuntimeRestrictionContract | None = None
+    if getattr(config, "mode", "standard") == "apntalk_verification":
+        restriction_contract = _build_apntalk_contract(config.allowed_dirs)
+        non_compliance = _apntalk_startup_check(config, restriction_contract)
+        if non_compliance:
+            reasons_str = "\n".join(f"  • {r}" for r in non_compliance)
+            raise SystemExit(
+                "APNTalk verification mode startup contract violation(s):\n"
+                + reasons_str
+                + "\nStartup aborted (fail_closed=true). "
+                "Fix the above before starting in apntalk_verification mode."
+            )
+        # Log operator-visible restriction summary.
+        logger.info(
+            "APNTalk verification mode ACTIVE — restriction_contract_id=%s "
+            "backend=%s transport=%s profile=%s exposed_tools=%s "
+            "allowed_dirs=%s compliance=PASS",
+            restriction_contract.restriction_contract_id,
+            restriction_contract.required_backend,
+            restriction_contract.required_transport,
+            restriction_contract.active_profile,
+            sorted(restriction_contract.allowed_tools),
+            restriction_contract.allowed_directories,
+        )
+
     config.ensure_dirs()
 
     session_store = SessionStore(config)
@@ -315,14 +441,15 @@ async def _setup_runtime(config):
         )
 
     logger.info(
-        "claude-agent-mcp v%s ready — backend=%s transport=%s preset=%s",
+        "claude-agent-mcp v%s ready — mode=%s backend=%s transport=%s preset=%s",
         VERSION,
+        getattr(config, "mode", "standard"),
         config.execution_backend,
         config.transport,
         config.operator_profile_preset or "none",
     )
 
-    return session_store, artifact_store, executor, status_inspector
+    return session_store, artifact_store, executor, status_inspector, restriction_contract
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +459,12 @@ async def _setup_runtime(config):
 async def run_stdio(config) -> None:
     from claude_agent_mcp.transports.stdio import run_stdio as _run_stdio
 
-    session_store, artifact_store, executor, status_inspector = await _setup_runtime(config)
-    server = build_server(session_store, artifact_store, executor, status_inspector)
+    session_store, artifact_store, executor, status_inspector, restriction_contract = (
+        await _setup_runtime(config)
+    )
+    server = build_server(
+        session_store, artifact_store, executor, status_inspector, restriction_contract
+    )
     try:
         await _run_stdio(server, session_store)
     finally:
@@ -344,8 +475,12 @@ async def run_stdio(config) -> None:
 async def run_streamable_http(config) -> None:
     from claude_agent_mcp.transports.streamable_http import run_streamable_http as _run_http
 
-    session_store, artifact_store, executor, status_inspector = await _setup_runtime(config)
-    server = build_server(session_store, artifact_store, executor, status_inspector)
+    session_store, artifact_store, executor, status_inspector, restriction_contract = (
+        await _setup_runtime(config)
+    )
+    server = build_server(
+        session_store, artifact_store, executor, status_inspector, restriction_contract
+    )
     try:
         await _run_http(server, host=config.host, port=config.port)
     finally:
@@ -366,6 +501,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--version",
         action="version",
         version=f"claude-agent-mcp {VERSION}",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["standard", "apntalk_verification"],
+        default=None,
+        help=(
+            "Runtime mode (default: CLAUDE_AGENT_MCP_MODE env var, or 'standard'). "
+            "'apntalk_verification' activates the restricted verification-only surface."
+        ),
     )
     parser.add_argument(
         "--transport",
@@ -394,6 +538,8 @@ def main() -> None:
     # Config is loaded from env first; CLI flags override specific fields.
     config = get_config()
 
+    if args.mode is not None:
+        config.mode = args.mode
     if args.transport is not None:
         config.transport = args.transport
     if args.host is not None:
@@ -405,8 +551,9 @@ def main() -> None:
     configure_logging(config.log_level)
 
     logger.info(
-        "Starting claude-agent-mcp v%s transport=%s model=%s backend=%s",
+        "Starting claude-agent-mcp v%s mode=%s transport=%s model=%s backend=%s",
         VERSION,
+        getattr(config, "mode", "standard"),
         config.transport,
         config.model,
         config.execution_backend,

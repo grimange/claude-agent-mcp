@@ -1,4 +1,4 @@
-# Claude Code Backend (v1.0.0)
+# Claude Code Backend (v1.1.0)
 
 ## Overview
 
@@ -474,3 +474,4 @@ For the full capability matrix, see [backend-capability-matrix.md](backend-capab
 - v0.7.0: `supports_structured_continuation_context` and `supports_continuation_window_policy` added. Claude Code backend uses a deterministic `SessionContinuationContext` for all continuation calls.
 - v0.8.0: `supports_execution_mediation` and `supports_mediated_action_results` added. Claude Code backend output may contain structured mediated action request blocks processed by the runtime under policy control. This is NOT native tool calling.
 - v0.9.0: `supports_bounded_mediated_workflows` and `supports_mediation_policy_profiles` added. Runtime-mediated execution hardened with: bounded multi-step workflows, richer policy controls (tool allow/deny lists, session approval limits), normalized `MediationRejectionReason` enum, per-step audit events, and configurable rejected-step continuation inclusion. External MCP contracts remain unchanged.
+- v1.1.0: APNTalk verification mode introduced. The Claude Code backend is the only supported backend for `apntalk_verification` mode. In this mode the server publishes only `agent_get_runtime_status` and `agent_verify_task`. `agent_get_runtime_status` returns exact restriction proof fields. See the [Operator Guide — APNTalk verification mode](operator-guide.md#12-apntalk-verification-mode-v110) for full details.

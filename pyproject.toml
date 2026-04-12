@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-agent-mcp"
-version = "1.0.2"
+version = "1.1.0"
 description = "Sessioned Claude-backed agent runtime exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"

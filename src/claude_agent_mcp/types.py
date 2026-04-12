@@ -198,6 +198,19 @@ class OperatorProfilePreset(str, Enum):
     workflow_limited = "workflow_limited"
 
 
+class RuntimeMode(str, Enum):
+    """Named runtime modes for claude-agent-mcp (v1.1.0).
+
+    standard              — Full tool surface, all profiles, all backends.
+    apntalk_verification  — Restricted mode: verification-only, advisory-only,
+                            claude_code backend, stdio transport, exact admitted
+                            tool pair only.
+    """
+
+    standard = "standard"
+    apntalk_verification = "apntalk_verification"
+
+
 class WarningCode(str, Enum):
     """Stable warning category codes for operator-facing warning messages (v1.0.0).
 
@@ -363,18 +376,79 @@ class AgentResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Runtime status inspection (v1.0.0)
+# Runtime restriction contract (v1.1.0)
+# ---------------------------------------------------------------------------
+
+
+class RuntimeRestrictionContract(BaseModel):
+    """Resolved restriction contract for a named restricted runtime mode (v1.1.0).
+
+    Defines the exact requirements and admitted tool surface for a named mode.
+    Used to drive server-side tool registration restriction and runtime-status
+    proof field population.
+
+    When mode is 'apntalk_verification':
+      - required_backend = 'claude_code'
+      - required_transport = 'stdio'
+      - allowed_tools = ['agent_get_runtime_status', 'agent_verify_task']
+      - restriction_contract_id = 'apntalk_verification_v1'
+      - restriction_contract_version = 1
+      - fail_closed = True
+    """
+
+    mode: str
+    """The named runtime mode this contract governs."""
+
+    policy_mode: str
+    """Policy constraint mode: e.g. 'verification_only'."""
+
+    authority_mode: str
+    """Authority posture: e.g. 'advisory_only'."""
+
+    tool_surface_mode: str
+    """Tool surface constraint: 'restricted' or 'full'."""
+
+    active_profile: str
+    """Active execution profile: e.g. 'apntalk_verification'."""
+
+    required_backend: str
+    """Backend that must be active: e.g. 'claude_code'."""
+
+    required_transport: str
+    """Transport that must be active: e.g. 'stdio'."""
+
+    allowed_tools: list[str]
+    """Exact admitted MCP tool names. Server registers only these."""
+
+    allowed_directories: list[str]
+    """Normalized absolute allowed-directory paths. Must be explicit and bounded."""
+
+    restriction_contract_id: str
+    """Stable contract identity string: e.g. 'apntalk_verification_v1'."""
+
+    restriction_contract_version: int
+    """Integer contract version for machine comparison."""
+
+    fail_closed: bool
+    """If True, startup fails when any contract requirement is not satisfied."""
+
+
+# ---------------------------------------------------------------------------
+# Runtime status inspection (v1.0.0 / v1.1.0)
 # ---------------------------------------------------------------------------
 
 
 class RuntimeStatusSnapshot(BaseModel):
-    """Resolved runtime status and capability snapshot (v1.0.0).
+    """Resolved runtime status and capability snapshot (v1.0.0 / v1.1.0).
 
     Produced by RuntimeStatusInspector. Shows the operator what the runtime
     believes is enabled and supported at startup, without requiring inference
     from logs or env var combinations.
 
     Exposed via agent_get_runtime_status MCP tool and startup log.
+
+    v1.1.0 adds restriction proof fields when a named restricted mode is active.
+    These fields are None when mode is 'standard' (backward compatible).
     """
 
     version: str
@@ -415,6 +489,47 @@ class RuntimeStatusSnapshot(BaseModel):
 
     resolved_at: str
     """ISO 8601 timestamp when this snapshot was produced."""
+
+    # --- Restriction proof fields (v1.1.0) — None when mode is 'standard' ---
+
+    mode: str = "standard"
+    """Active runtime mode: 'standard' or 'apntalk_verification'."""
+
+    policy_mode: str | None = None
+    """Restriction policy mode. None in standard mode."""
+
+    authority_mode: str | None = None
+    """Restriction authority posture. None in standard mode."""
+
+    tool_surface_mode: str | None = None
+    """Tool surface constraint: 'restricted' or None."""
+
+    active_profile: str | None = None
+    """Active restriction profile. None in standard mode."""
+
+    exposed_tools: list[str] | None = None
+    """Exact list of MCP tool names registered on the server. None in standard mode."""
+
+    allowed_directories: list[str] | None = None
+    """Normalized allowed-directory paths. None in standard mode."""
+
+    restriction_contract_id: str | None = None
+    """Stable restriction contract identity. None in standard mode."""
+
+    restriction_contract_version: int | None = None
+    """Restriction contract version. None in standard mode."""
+
+    fail_closed_enabled: bool | None = None
+    """Whether fail-closed startup enforcement is active. None in standard mode."""
+
+    restriction_compliance: bool | None = None
+    """True if all restriction contract requirements are satisfied. None in standard mode."""
+
+    non_compliance_reasons: list[str] | None = None
+    """Reasons the restriction contract is not fully satisfied. None in standard mode."""
+
+    server_version: str | None = None
+    """Server version string included in restriction proof. None in standard mode."""
 
 
 # ---------------------------------------------------------------------------

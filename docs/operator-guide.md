@@ -1,4 +1,4 @@
-# Operator Guide (v1.0.0)
+# Operator Guide (v1.1.0)
 
 This guide covers how to configure, deploy, and inspect `claude-agent-mcp` in production.
 
@@ -280,3 +280,128 @@ claude-agent-mcp
 ```
 
 See `docs/upgrade-guide-v1.0.md` for migration notes from earlier versions.
+
+---
+
+## 12. APNTalk verification mode (v1.1.0)
+
+### What it is
+
+`apntalk_verification` is a first-class restricted runtime mode that publishes only two MCP tools:
+
+- `agent_get_runtime_status`
+- `agent_verify_task`
+
+All other tools (`agent_run_task`, `agent_continue_session`, `agent_get_session`, `agent_list_sessions`) are not registered. MCP introspection will not list them. Calls to them are rejected.
+
+This mode is:
+- **verification-only** — only `agent_verify_task` can execute workflows
+- **advisory-only** — the authority posture is `advisory_only`
+- **bounded** — allowed directories must be explicit at startup
+- **machine-verifiable** — `agent_get_runtime_status` returns exact proof fields
+- **fail-closed** — startup aborts if any contract requirement is not satisfied
+
+### Requirements
+
+APNTalk verification mode is **`claude_code` backend only**. The `api` backend is not supported.
+
+Startup will fail if:
+- backend is not `claude_code`
+- transport is not `stdio`
+- allowed directories are missing or not absolute paths
+
+### How to enable
+
+**Via environment variable:**
+
+```bash
+export CLAUDE_AGENT_MCP_MODE=apntalk_verification
+export CLAUDE_AGENT_MCP_EXECUTION_BACKEND=claude_code
+export CLAUDE_AGENT_MCP_TRANSPORT=stdio
+export CLAUDE_AGENT_MCP_ALLOWED_DIRS=/path/to/bounded/dir
+claude-agent-mcp
+```
+
+**Via CLI flag:**
+
+```bash
+CLAUDE_AGENT_MCP_EXECUTION_BACKEND=claude_code \
+CLAUDE_AGENT_MCP_ALLOWED_DIRS=/path/to/bounded/dir \
+claude-agent-mcp --mode apntalk_verification
+```
+
+### Exact admitted tool surface
+
+| Tool | Admitted |
+|------|----------|
+| `agent_get_runtime_status` | Yes |
+| `agent_verify_task` | Yes |
+| `agent_run_task` | **No** |
+| `agent_continue_session` | **No** |
+| `agent_get_session` | **No** |
+| `agent_list_sessions` | **No** |
+
+### Runtime-status proof
+
+Call `agent_get_runtime_status` to receive machine-readable restriction proof:
+
+```json
+{
+  "mode": "apntalk_verification",
+  "policy_mode": "verification_only",
+  "authority_mode": "advisory_only",
+  "tool_surface_mode": "restricted",
+  "active_profile": "apntalk_verification",
+  "backend": "claude_code",
+  "transport": "stdio",
+  "exposed_tools": ["agent_get_runtime_status", "agent_verify_task"],
+  "allowed_directories": ["/path/to/bounded/dir"],
+  "restriction_contract_id": "apntalk_verification_v1",
+  "restriction_contract_version": 1,
+  "fail_closed_enabled": true,
+  "restriction_compliance": true,
+  "non_compliance_reasons": null,
+  "server_version": "1.1.0"
+}
+```
+
+All restriction proof fields are exact, machine-readable values. `restriction_compliance: true` confirms the contract is fully satisfied.
+
+### Operator startup log
+
+At startup, the server logs a restriction summary at INFO level:
+
+```
+APNTalk verification mode ACTIVE — restriction_contract_id=apntalk_verification_v1
+  backend=claude_code transport=stdio profile=apntalk_verification
+  exposed_tools=['agent_get_runtime_status', 'agent_verify_task']
+  allowed_dirs=['/path/to/bounded/dir'] compliance=PASS
+```
+
+### Fail-closed behavior
+
+If any contract requirement is not satisfied, startup aborts:
+
+```
+APNTalk verification mode startup contract violation(s):
+  • backend='api' does not match required_backend='claude_code'
+Startup aborted (fail_closed=true). Fix the above before starting in apntalk_verification mode.
+```
+
+There is no silent fallback to standard mode.
+
+### Bounded directory requirements
+
+`CLAUDE_AGENT_MCP_ALLOWED_DIRS` must contain at least one entry. All entries must be absolute paths. If omitted, the server defaults to CWD — which is explicitly allowed and surfaced in the runtime status proof.
+
+To use a specific bounded directory:
+
+```bash
+export CLAUDE_AGENT_MCP_ALLOWED_DIRS=/home/user/project
+```
+
+### Standard mode is unchanged
+
+Activating APNTalk mode is strictly additive. Standard mode behavior and the full tool surface remain identical when `CLAUDE_AGENT_MCP_MODE` is not set or is `standard`.
+
+Restriction proof fields in `agent_get_runtime_status` are `null` in standard mode.

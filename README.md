@@ -4,7 +4,7 @@
 
 Sessions persist in SQLite across server restarts. Both the Anthropic API and the Claude Code CLI are supported as execution backends. All tool responses share a single normalized response envelope regardless of which backend is active.
 
-**v1.0.0 · Python 3.11+ · stdio transport · SQLite persistence**
+**v1.1.0 · Python 3.11+ · stdio transport · SQLite persistence**
 
 ---
 
@@ -17,6 +17,7 @@ Sessions persist in SQLite across server restarts. Both the Anthropic API and th
 - **Policy-bounded execution** — profiles control permissions, turn limits, and directory access
 - **Structured verification** — evidence-based evaluation with fail-closed semantics
 - **Runtime status inspection** — confirm active configuration without side effects
+- **APNTalk verification mode** — server-level restricted surface: verification-only, advisory-only, machine-verifiable, fail-closed (v1.1.0)
 - **Optional downstream federation** — expose other MCP server tools to Claude under explicit operator allowlists
 
 ---
@@ -71,6 +72,21 @@ claude-agent-mcp
 
 No API key required. Authentication comes from your existing Claude Code session.
 
+### APNTalk verification mode (v1.1.0)
+
+APNTalk mode restricts the server to a two-tool verification surface at the server level — not downstream filtering:
+
+```bash
+pip install claude-agent-mcp
+claude login
+export CLAUDE_AGENT_MCP_MODE=apntalk_verification
+export CLAUDE_AGENT_MCP_EXECUTION_BACKEND=claude_code
+export CLAUDE_AGENT_MCP_ALLOWED_DIRS=/path/to/bounded/scope
+claude-agent-mcp
+```
+
+In this mode the server publishes only `agent_get_runtime_status` and `agent_verify_task`. All other tools are absent from MCP introspection. Startup fails if the contract cannot be fully satisfied. See [docs/operator-guide.md — APNTalk verification mode](docs/operator-guide.md#12-apntalk-verification-mode-v110) for full details.
+
 ---
 
 ## Using with Codex
@@ -99,7 +115,7 @@ CLAUDE_AGENT_MCP_EXECUTION_BACKEND = "claude_code"
 
 Once registered, Codex can call all `claude-agent-mcp` tools during task execution.
 
-For full setup instructions, verification steps, and troubleshooting see **[docs/codex-setup.md](docs/codex-setup.md)**.
+For full setup instructions, verification steps, and troubleshooting see **[docs/codex-setup.md](https://github.com/grimange/claude-agent-mcp/blob/main/docs/codex-setup.md)**.
 
 ---
 
@@ -196,7 +212,7 @@ From any connected MCP client, call `agent_get_runtime_status` with an empty req
 
 ## Limitations
 
-These are the current boundaries of the v1.0.0 release.
+These are the current boundaries of the v1.1.0 release.
 
 - **No in-flight cancellation** — sessions run to completion or timeout; there is no cancel signal
 - **No artifact browsing tools** — artifact read and list tools are not yet exposed via MCP
@@ -215,6 +231,7 @@ Start with the simplest configuration that meets your needs. Enable federation, 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `CLAUDE_AGENT_MCP_MODE` | `standard` | Runtime mode: `standard` or `apntalk_verification` |
 | `CLAUDE_AGENT_MCP_TRANSPORT` | `stdio` | Transport: `stdio` or `streamable-http` |
 | `CLAUDE_AGENT_MCP_HOST` | `127.0.0.1` | Bind host (streamable-http only) |
 | `CLAUDE_AGENT_MCP_PORT` | `8000` | Bind port (streamable-http only) |
@@ -241,7 +258,7 @@ Start with the simplest configuration that meets your needs. Enable federation, 
 | `CLAUDE_AGENT_MCP_FEDERATION_ENABLED` | `false` | Enable downstream MCP federation |
 | `CLAUDE_AGENT_MCP_FEDERATION_CONFIG` | — | Path to federation JSON config |
 
-All downstream tools require explicit allowlisting. See [`docs/federation.md`](docs/federation.md).
+All downstream tools require explicit allowlisting. See [`docs/federation.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/federation.md).
 
 ### Claude Code backend: advanced options
 
@@ -255,7 +272,7 @@ All downstream tools require explicit allowlisting. See [`docs/federation.md`](d
 | `CLAUDE_AGENT_MCP_CLAUDE_CODE_DENIED_MEDIATED_TOOLS` | none | Tool denylist — always blocked |
 | `CLAUDE_AGENT_MCP_CLAUDE_CODE_MAX_SESSION_MEDIATED_APPROVALS` | `100` | Session-level approval cap |
 
-See [`docs/claude-code-backend.md`](docs/claude-code-backend.md) for the full mediation reference.
+See [`docs/claude-code-backend.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/claude-code-backend.md) for the full mediation reference.
 
 ---
 
@@ -295,14 +312,14 @@ Override the root with `CLAUDE_AGENT_MCP_STATE_DIR`.
 
 | Doc | Description |
 |-----|-------------|
-| [`docs/codex-setup.md`](docs/codex-setup.md) | Full Codex MCP setup guide |
-| [`docs/execution-backends.md`](docs/execution-backends.md) | Backend comparison and selection |
-| [`docs/claude-code-backend.md`](docs/claude-code-backend.md) | Claude Code backend: continuation, mediation, troubleshooting |
-| [`docs/backend-capability-matrix.md`](docs/backend-capability-matrix.md) | Complete capability comparison |
-| [`docs/transports.md`](docs/transports.md) | Transport configuration |
-| [`docs/deployment.md`](docs/deployment.md) | General deployment guide |
-| [`docs/federation.md`](docs/federation.md) | Downstream federation operator guide |
-| [`CHANGELOG.md`](CHANGELOG.md) | Version history |
+| [`docs/codex-setup.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/codex-setup.md) | Full Codex MCP setup guide |
+| [`docs/execution-backends.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/execution-backends.md) | Backend comparison and selection |
+| [`docs/claude-code-backend.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/claude-code-backend.md) | Claude Code backend: continuation, mediation, troubleshooting |
+| [`docs/backend-capability-matrix.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/backend-capability-matrix.md) | Complete capability comparison |
+| [`docs/transports.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/transports.md) | Transport configuration |
+| [`docs/deployment.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/deployment.md) | General deployment guide |
+| [`docs/federation.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/federation.md) | Downstream federation operator guide |
+| [`CHANGELOG.md`](https://github.com/grimange/claude-agent-mcp/blob/main/CHANGELOG.md) | Version history |
 
 ---
 

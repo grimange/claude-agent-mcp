@@ -5,6 +5,7 @@ All paths are resolved to absolute strings at load time.
 
 Environment variable reference:
   ANTHROPIC_API_KEY               — Claude API key (required for api backend)
+  CLAUDE_AGENT_MCP_MODE           — Runtime mode: standard | apntalk_verification (default: standard)
   CLAUDE_AGENT_MCP_TRANSPORT      — Transport mode: stdio | streamable-http (default: stdio)
   CLAUDE_AGENT_MCP_HOST           — Bind host for network transport (default: 127.0.0.1)
   CLAUDE_AGENT_MCP_PORT           — Bind port for network transport (default: 8000)
@@ -70,6 +71,11 @@ load_dotenv()
 
 VALID_TRANSPORTS = {"stdio", "streamable-http"}
 VALID_EXECUTION_BACKENDS = {"api", "claude_code"}
+VALID_MODES = {"standard", "apntalk_verification"}
+
+# APNTalk mode requires these exact values.
+_APNTALK_REQUIRED_BACKEND = "claude_code"
+_APNTALK_REQUIRED_TRANSPORT = "stdio"
 
 # ---------------------------------------------------------------------------
 # Operator profile preset defaults (v1.0.0)
@@ -176,6 +182,15 @@ class Config:
         def _preset(field: str, hardcoded_default: str = "") -> str:
             """Return preset default for a field, or hardcoded_default if not in preset."""
             return _preset_defaults.get(field, hardcoded_default)
+
+        # --- Runtime mode (v1.1.0) ---
+        # Controls whether to activate a named restricted mode.
+        # 'standard' (default) — full tool surface, all profiles.
+        # 'apntalk_verification' — restricted mode: claude_code backend, stdio
+        #   transport, verification-only, advisory-only, exact admitted tool pair.
+        self.mode: str = _env(
+            "CLAUDE_AGENT_MCP_MODE", default="standard"
+        ).strip().lower()
 
         # --- Transport ---
         self.transport: str = _env(
@@ -380,6 +395,13 @@ class Config:
         """Fail early and clearly on invalid startup configuration."""
         errors: list[str] = []
 
+        mode = getattr(self, "mode", "standard")
+        if mode not in VALID_MODES:
+            errors.append(
+                f"CLAUDE_AGENT_MCP_MODE={mode!r} is not valid. "
+                f"Choose from: {sorted(VALID_MODES)}"
+            )
+
         if self.transport not in VALID_TRANSPORTS:
             errors.append(
                 f"CLAUDE_AGENT_MCP_TRANSPORT={self.transport!r} is not valid. "
@@ -404,6 +426,23 @@ class Config:
                 f"CLAUDE_AGENT_MCP_EXECUTION_BACKEND={self.execution_backend!r} is not valid. "
                 f"Choose from: {sorted(VALID_EXECUTION_BACKENDS)}"
             )
+
+        # APNTalk verification mode hard constraints (v1.1.0).
+        # These are fail-closed: if the mode is requested but constraints cannot
+        # be satisfied, startup must fail rather than silently widening the surface.
+        if mode == "apntalk_verification":
+            if self.execution_backend != _APNTALK_REQUIRED_BACKEND:
+                errors.append(
+                    f"CLAUDE_AGENT_MCP_MODE=apntalk_verification requires "
+                    f"CLAUDE_AGENT_MCP_EXECUTION_BACKEND={_APNTALK_REQUIRED_BACKEND!r}, "
+                    f"got {self.execution_backend!r}"
+                )
+            if self.transport != _APNTALK_REQUIRED_TRANSPORT:
+                errors.append(
+                    f"CLAUDE_AGENT_MCP_MODE=apntalk_verification requires "
+                    f"CLAUDE_AGENT_MCP_TRANSPORT={_APNTALK_REQUIRED_TRANSPORT!r}, "
+                    f"got {self.transport!r}"
+                )
 
         if errors:
             raise SystemExit(

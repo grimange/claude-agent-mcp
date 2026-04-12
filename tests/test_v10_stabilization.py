@@ -305,7 +305,7 @@ def test_status_inspector_build_snapshot_basic():
     inspector = RuntimeStatusInspector(config)
     snapshot = inspector.build_snapshot()
 
-    assert snapshot.version == "1.0.0"
+    assert snapshot.version == "1.1.0"
     assert snapshot.backend == "api"
     assert snapshot.transport == "stdio"
     assert snapshot.operator_profile_preset is None
@@ -372,8 +372,8 @@ def test_status_inspector_preserved_limitations_non_empty():
     assert len(PRESERVED_LIMITATIONS) >= 3
 
 
-def test_status_inspector_version_is_1_0_0():
-    assert INSPECTOR_VERSION == "1.0.0"
+def test_status_inspector_version_is_1_1_0():
+    assert INSPECTOR_VERSION == "1.1.0"
 
 
 def test_status_inspector_with_backend_capabilities():
@@ -619,8 +619,8 @@ def test_format_federation_inactive_warning():
 # ---------------------------------------------------------------------------
 
 
-def test_server_version_is_1_0_0():
-    assert SERVER_VERSION == "1.0.0"
+def test_server_version_is_1_1_0():
+    assert SERVER_VERSION == "1.1.0"
 
 
 def test_v01_tool_contracts_preserved():

@@ -14,13 +14,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from claude_agent_mcp.types import RuntimeStatusSnapshot
+from claude_agent_mcp.types import RuntimeRestrictionContract, RuntimeStatusSnapshot
 
 if TYPE_CHECKING:
     from claude_agent_mcp.backends.base import BackendCapabilities
     from claude_agent_mcp.config import Config
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Intentional product boundaries preserved in v1.0.0.
 PRESERVED_LIMITATIONS: list[str] = [
@@ -55,6 +55,8 @@ class RuntimeStatusInspector:
     def build_snapshot(
         self,
         backend_capabilities: "BackendCapabilities | None" = None,
+        restriction_contract: "RuntimeRestrictionContract | None" = None,
+        exposed_tool_names: "list[str] | None" = None,
     ) -> RuntimeStatusSnapshot:
         """Produce a RuntimeStatusSnapshot from the current config.
 
@@ -62,13 +64,65 @@ class RuntimeStatusInspector:
             backend_capabilities: Optional capabilities from the active backend.
                 When provided, capability flags are merged with config-driven flags
                 for a more complete picture.
+            restriction_contract: Active RuntimeRestrictionContract when a named
+                restricted mode is active (v1.1.0). None in standard mode.
+            exposed_tool_names: Sorted list of MCP tool names actually registered
+                on the server (v1.1.0). None in standard mode.
         """
+        from claude_agent_mcp.server import VERSION as SERVER_VERSION
+
         config = self._config
 
         capability_flags = self._resolve_capability_flags(config, backend_capabilities)
         continuation_settings = self._resolve_continuation_settings(config)
         mediation_settings = self._resolve_mediation_settings(config)
         workflow_settings = self._resolve_workflow_settings(config)
+
+        # Resolve restriction proof fields (v1.1.0).
+        if restriction_contract is not None:
+            mode = restriction_contract.mode
+            policy_mode = restriction_contract.policy_mode
+            authority_mode = restriction_contract.authority_mode
+            tool_surface_mode = restriction_contract.tool_surface_mode
+            active_profile = restriction_contract.active_profile
+            allowed_directories = list(restriction_contract.allowed_directories)
+            restriction_contract_id = restriction_contract.restriction_contract_id
+            restriction_contract_version = restriction_contract.restriction_contract_version
+            fail_closed_enabled = restriction_contract.fail_closed
+            exposed_tools = sorted(exposed_tool_names) if exposed_tool_names is not None else sorted(restriction_contract.allowed_tools)
+            # Compliance: exposed tools must exactly match the admitted set.
+            admitted_set = frozenset(restriction_contract.allowed_tools)
+            actual_set = frozenset(exposed_tools)
+            non_compliance: list[str] = []
+            if actual_set != admitted_set:
+                extra = actual_set - admitted_set
+                missing = admitted_set - actual_set
+                if extra:
+                    non_compliance.append(f"extra tools registered: {sorted(extra)}")
+                if missing:
+                    non_compliance.append(f"admitted tools missing: {sorted(missing)}")
+            if config.execution_backend != restriction_contract.required_backend:
+                non_compliance.append(
+                    f"backend={config.execution_backend!r} != required={restriction_contract.required_backend!r}"
+                )
+            if config.transport != restriction_contract.required_transport:
+                non_compliance.append(
+                    f"transport={config.transport!r} != required={restriction_contract.required_transport!r}"
+                )
+            restriction_compliance = len(non_compliance) == 0
+        else:
+            mode = getattr(config, "mode", "standard")
+            policy_mode = None
+            authority_mode = None
+            tool_surface_mode = None
+            active_profile = None
+            allowed_directories = None
+            restriction_contract_id = None
+            restriction_contract_version = None
+            fail_closed_enabled = None
+            exposed_tools = None
+            restriction_compliance = None
+            non_compliance = []
 
         return RuntimeStatusSnapshot(
             version=VERSION,
@@ -84,6 +138,20 @@ class RuntimeStatusInspector:
             workflow_settings=workflow_settings,
             preserved_limitations=PRESERVED_LIMITATIONS,
             resolved_at=datetime.now(tz=timezone.utc).isoformat(),
+            # Restriction proof fields (v1.1.0)
+            mode=mode,
+            policy_mode=policy_mode,
+            authority_mode=authority_mode,
+            tool_surface_mode=tool_surface_mode,
+            active_profile=active_profile,
+            exposed_tools=exposed_tools,
+            allowed_directories=allowed_directories,
+            restriction_contract_id=restriction_contract_id,
+            restriction_contract_version=restriction_contract_version,
+            fail_closed_enabled=fail_closed_enabled,
+            restriction_compliance=restriction_compliance,
+            non_compliance_reasons=non_compliance if non_compliance else None,
+            server_version=SERVER_VERSION if restriction_contract is not None else None,
         )
 
     @staticmethod
