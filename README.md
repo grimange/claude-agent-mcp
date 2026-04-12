@@ -4,7 +4,7 @@
 
 Sessions persist in SQLite across server restarts. Both the Anthropic API and the Claude Code CLI are supported as execution backends. All tool responses share a single normalized response envelope regardless of which backend is active.
 
-**v1.1.0 · Python 3.11+ · stdio transport · SQLite persistence**
+**v1.1.1 · Python 3.11+ · stdio transport · SQLite persistence**
 
 ---
 
@@ -15,7 +15,7 @@ Sessions persist in SQLite across server restarts. Both the Anthropic API and th
 - **Stable MCP tool contracts** — consistent request/response schemas across backends
 - **Session continuation** — resume any past session from any MCP client with full context
 - **Policy-bounded execution** — profiles control permissions, turn limits, and directory access
-- **Structured verification** — evidence-based evaluation with fail-closed semantics
+- **Structured verification** — evidence-based evaluation with fail-closed semantics; structured reason codes, operator guidance, and scope assessment (v1.1.1)
 - **Runtime status inspection** — confirm active configuration without side effects
 - **APNTalk verification mode** — server-level restricted surface: verification-only, advisory-only, machine-verifiable, fail-closed (v1.1.0)
 - **Optional downstream federation** — expose other MCP server tools to Claude under explicit operator allowlists
@@ -72,7 +72,7 @@ claude-agent-mcp
 
 No API key required. Authentication comes from your existing Claude Code session.
 
-### APNTalk verification mode (v1.1.0)
+### APNTalk verification mode
 
 APNTalk mode restricts the server to a two-tool verification surface at the server level — not downstream filtering:
 
@@ -85,7 +85,7 @@ export CLAUDE_AGENT_MCP_ALLOWED_DIRS=/path/to/bounded/scope
 claude-agent-mcp
 ```
 
-In this mode the server publishes only `agent_get_runtime_status` and `agent_verify_task`. All other tools are absent from MCP introspection. Startup fails if the contract cannot be fully satisfied. See [docs/operator-guide.md — APNTalk verification mode](docs/operator-guide.md#12-apntalk-verification-mode-v110) for full details.
+In this mode the server publishes only `agent_get_runtime_status` and `agent_verify_task`. All other tools are absent from MCP introspection. Startup fails if the contract cannot be fully satisfied. See [docs/operator-guide.md](docs/operator-guide.md) for full details.
 
 ---
 
@@ -173,16 +173,40 @@ All tools return a normalized response envelope:
 
 ### Run a structured verification
 
+Narrow requests produce high-signal results. Name a specific artifact and one verifiable claim:
+
 ```json
 {
-  "task": "Verify the implementation matches the spec",
-  "scope": "authentication module",
-  "evidence_paths": ["/path/to/spec.md", "/path/to/impl.py"],
+  "task": "Verify whether src/auth.py satisfies the session-token storage requirement in spec.md",
+  "evidence_paths": ["/path/to/spec.md", "/path/to/src/auth.py"],
   "fail_closed": true
 }
 ```
 
-Returns a verdict: `pass`, `pass_with_restrictions`, `fail_closed`, or `insufficient_evidence`.
+The result includes a verdict (`pass`, `pass_with_restrictions`, `fail_closed`, `insufficient_evidence`) plus structured assessment fields:
+
+```json
+{
+  "result": {
+    "verdict": "fail_closed",
+    "decision": "not_verified",
+    "primary_reason": "insufficient_evidence",
+    "reason_codes": ["insufficient_evidence"],
+    "operator_guidance": [
+      "Provide the target artifact, expected outcome, or a bounded evidence source."
+    ],
+    "evidence_sufficiency": "insufficient",
+    "scope_assessment": "narrow",
+    "profile_alignment": "in_profile",
+    "findings": [],
+    "contradictions": [],
+    "missing_evidence": ["session token storage policy not found in provided evidence"],
+    "restrictions": []
+  }
+}
+```
+
+Use `primary_reason` to distinguish evidence failures from scope problems and profile mismatches. See [docs/operator-guide.md — Verification result interpretation](docs/operator-guide.md) for the full reason taxonomy and request guidance.
 
 ---
 
@@ -212,7 +236,7 @@ From any connected MCP client, call `agent_get_runtime_status` with an empty req
 
 ## Limitations
 
-These are the current boundaries of the v1.1.0 release.
+These are the current boundaries of the v1.1.1 release.
 
 - **No in-flight cancellation** — sessions run to completion or timeout; there is no cancel signal
 - **No artifact browsing tools** — artifact read and list tools are not yet exposed via MCP
@@ -312,6 +336,7 @@ Override the root with `CLAUDE_AGENT_MCP_STATE_DIR`.
 
 | Doc | Description |
 |-----|-------------|
+| [`docs/operator-guide.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/operator-guide.md) | Operator configuration, APNTalk mode, verification result interpretation |
 | [`docs/codex-setup.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/codex-setup.md) | Full Codex MCP setup guide |
 | [`docs/execution-backends.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/execution-backends.md) | Backend comparison and selection |
 | [`docs/claude-code-backend.md`](https://github.com/grimange/claude-agent-mcp/blob/main/docs/claude-code-backend.md) | Claude Code backend: continuation, mediation, troubleshooting |
@@ -343,4 +368,4 @@ Run tests:
 pytest tests/ -v
 ```
 
-457 tests covering sessions, policy enforcement, tool contracts, transports, federation, backends, verification, continuation context, and execution mediation.
+644 tests covering sessions, policy enforcement, tool contracts, transports, federation, backends, verification (including reason taxonomy and preflight), continuation context, and execution mediation.

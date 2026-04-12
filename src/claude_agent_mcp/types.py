@@ -179,6 +179,69 @@ class VerificationVerdict(str, Enum):
     insufficient_evidence = "insufficient_evidence"
 
 
+class VerificationReasonCode(str, Enum):
+    """Stable reason codes for verification outcomes (v1.1.1).
+
+    Maps into three conceptual groups:
+
+    Evidence reasons:
+        sufficient_evidence     — Evidence supports the claim.
+        insufficient_evidence   — Evidence is absent, weak, or inconclusive.
+
+    Request-quality reasons:
+        scope_too_broad         — Request covers too many artifacts or objectives.
+        missing_required_context — No named target, artifact, or evidence anchor.
+        non_verifiable_request  — Cannot be answered through passive evidence review.
+        ambiguous_request       — Verification goal is unclear or multi-valued.
+
+    Policy/profile reasons:
+        out_of_profile_request      — Request exceeds the active verification profile.
+        restricted_mode_mismatch    — Request is incompatible with APNTalk verification mode.
+    """
+
+    sufficient_evidence = "sufficient_evidence"
+    insufficient_evidence = "insufficient_evidence"
+    scope_too_broad = "scope_too_broad"
+    out_of_profile_request = "out_of_profile_request"
+    restricted_mode_mismatch = "restricted_mode_mismatch"
+    missing_required_context = "missing_required_context"
+    non_verifiable_request = "non_verifiable_request"
+    ambiguous_request = "ambiguous_request"
+
+
+class VerificationDecision(str, Enum):
+    """Top-level decision code for a verification result (v1.1.1)."""
+
+    verified = "verified"
+    not_verified = "not_verified"
+    inconclusive = "inconclusive"
+
+
+class EvidenceSufficiency(str, Enum):
+    """Evidence sufficiency assessment for a verification result (v1.1.1)."""
+
+    sufficient = "sufficient"
+    partial = "partial"
+    insufficient = "insufficient"
+
+
+class ScopeAssessment(str, Enum):
+    """Request scope assessment for a verification result (v1.1.1)."""
+
+    narrow = "narrow"
+    acceptable = "acceptable"
+    broad = "broad"
+    too_broad = "too_broad"
+
+
+class ProfileAlignment(str, Enum):
+    """Profile alignment assessment for a verification result (v1.1.1)."""
+
+    in_profile = "in_profile"
+    out_of_profile = "out_of_profile"
+    restricted_mode_mismatch = "restricted_mode_mismatch"
+
+
 class OperatorProfilePreset(str, Enum):
     """Named operator-facing profile presets that configure multiple fields at once (v1.0.0).
 
@@ -784,6 +847,47 @@ class NormalizedVerificationResult(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
     restrictions: list[str] = Field(default_factory=list)
     output_text: str = ""
+
+
+class VerificationRequestShape(BaseModel):
+    """Heuristic analysis of a verification request's breadth and specificity (v1.1.1).
+
+    Produced by verification_preflight.analyze_request_shape().
+    Used to feed preflight lint codes, scope assessment, and operator hints.
+    """
+
+    is_narrow: bool
+    """True if breadth_score <= 1 (request is well-scoped)."""
+
+    breadth_score: int
+    """0–4 breadth indicator (0 = narrow, 4 = very broad)."""
+
+    detected_targets: list[str] = Field(default_factory=list)
+    """Specific named artifacts, file paths, or quoted claims found in the request."""
+
+    detected_risks: list[str] = Field(default_factory=list)
+    """Detected indicators of a broad or weak request."""
+
+
+class VerificationPreflightResult(BaseModel):
+    """Lightweight preflight lint result for a verification request (v1.1.1).
+
+    Produced by verification_preflight.run_preflight().
+    In restricted APNTalk mode, ok=False signals a hard mismatch that blocks execution.
+    In standard mode, ok=True unless a hard policy blocker is found.
+    """
+
+    ok: bool
+    """False only when a hard mismatch blocks execution in restricted mode."""
+
+    lint_codes: list[VerificationReasonCode] = Field(default_factory=list)
+    """Stable reason codes detected by the preflight pass."""
+
+    hints: list[str] = Field(default_factory=list)
+    """Short, actionable guidance strings derived from lint_codes."""
+
+    normalized_scope_summary: str = ""
+    """Short human-readable scope summary derived from the request."""
 
 
 # ---------------------------------------------------------------------------

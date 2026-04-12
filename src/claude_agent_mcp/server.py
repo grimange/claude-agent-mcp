@@ -46,7 +46,7 @@ from claude_agent_mcp.types import RuntimeRestrictionContract
 
 logger = get_logger(__name__)
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 # ---------------------------------------------------------------------------
 # APNTalk restriction contract (v1.1.0)

@@ -38,6 +38,11 @@ from claude_agent_mcp.runtime.mediation_engine import (
     MediationEngine,
     POLICY_APPROVED,
 )
+from claude_agent_mcp.runtime.verification_preflight import (
+    collect_operator_guidance,
+    map_verdict_to_assessment,
+    run_preflight,
+)
 from claude_agent_mcp.types import (
     AgentResponse,
     ArtifactReference,
@@ -55,6 +60,8 @@ from claude_agent_mcp.types import (
     ProfileName,
     RunTaskRequest,
     SessionStatus,
+    VerificationPreflightResult,
+    VerificationReasonCode,
     VerificationVerdict,
     VerifyTaskRequest,
     WorkflowName,
@@ -572,6 +579,16 @@ class WorkflowExecutor:
         warnings: list[str] = []
         errors: list[ErrorObject] = []
 
+        # Determine whether we are in restricted APNTalk verification mode.
+        is_restricted = getattr(self._config, "mode", "standard") == "apntalk_verification"
+
+        # --- Preflight / request-shape analysis (v1.1.1) ---
+        # Run before session creation so mismatch responses are cheap and sessionless.
+        preflight = run_preflight(req, is_restricted_mode=is_restricted)
+        if not preflight.ok:
+            # Restricted-mode hard mismatch — return immediately without creating a session.
+            return self._verification_preflight_blocked_response(preflight)
+
         # Validate evidence paths exist before policy (so missing paths return a
         # structured verification error rather than a generic policy error).
         evidence_issues: list[str] = []
@@ -586,6 +603,7 @@ class WorkflowExecutor:
                 verdict=VerificationVerdict.fail_closed,
                 warnings=warnings,
                 errors=[ErrorObject(code="missing_evidence", message=msg) for msg in evidence_issues],
+                preflight=preflight,
             )
         elif evidence_issues:
             warnings.extend(evidence_issues)
@@ -670,6 +688,17 @@ class WorkflowExecutor:
                 session_id, ver_result, raw_result.output_text, profile, raw_result.turn_count
             )
 
+            # Build richer structured result (v1.1.1)
+            (
+                decision,
+                primary_reason,
+                reason_codes,
+                evidence_sufficiency,
+                scope_assessment,
+                profile_alignment,
+            ) = map_verdict_to_assessment(ver_result.verdict, preflight)
+            operator_guidance = collect_operator_guidance(reason_codes)
+
             response = AgentResponse(
                 ok=True,
                 session_id=session_id,
@@ -678,11 +707,20 @@ class WorkflowExecutor:
                 profile=ProfileName.verification,
                 summary=summary,
                 result={
+                    # Core verdict fields (backward-compatible)
                     "verdict": ver_result.verdict.value,
                     "findings": ver_result.findings,
                     "contradictions": ver_result.contradictions,
                     "missing_evidence": ver_result.missing_evidence,
                     "restrictions": ver_result.restrictions,
+                    # Richer structured fields (v1.1.1)
+                    "decision": decision.value,
+                    "primary_reason": primary_reason.value,
+                    "reason_codes": [rc.value for rc in reason_codes],
+                    "operator_guidance": operator_guidance,
+                    "evidence_sufficiency": evidence_sufficiency.value,
+                    "scope_assessment": scope_assessment.value,
+                    "profile_alignment": profile_alignment.value,
                 },
                 artifacts=artifact_refs,
                 warnings=warnings,
@@ -1419,7 +1457,27 @@ class WorkflowExecutor:
         verdict: VerificationVerdict,
         warnings: list[str],
         errors: list[ErrorObject],
+        preflight: VerificationPreflightResult | None = None,
     ) -> AgentResponse:
+        # Build a minimal preflight if none was supplied
+        if preflight is None:
+            preflight = VerificationPreflightResult(
+                ok=False,
+                lint_codes=[VerificationReasonCode.insufficient_evidence],
+                hints=[],
+                normalized_scope_summary="",
+            )
+
+        (
+            decision,
+            primary_reason,
+            reason_codes,
+            evidence_sufficiency,
+            scope_assessment,
+            profile_alignment,
+        ) = map_verdict_to_assessment(verdict, preflight)
+        operator_guidance = collect_operator_guidance(reason_codes)
+
         return AgentResponse(
             ok=False,
             session_id=session_id,
@@ -1428,13 +1486,80 @@ class WorkflowExecutor:
             profile=ProfileName.verification,
             summary=f"Verification {verdict.value}",
             result={
+                # Core verdict fields (backward-compatible)
                 "verdict": verdict.value,
                 "findings": [],
                 "contradictions": [],
                 "missing_evidence": [],
                 "restrictions": [],
+                # Richer structured fields (v1.1.1)
+                "decision": decision.value,
+                "primary_reason": primary_reason.value,
+                "reason_codes": [rc.value for rc in reason_codes],
+                "operator_guidance": operator_guidance,
+                "evidence_sufficiency": evidence_sufficiency.value,
+                "scope_assessment": scope_assessment.value,
+                "profile_alignment": profile_alignment.value,
             },
             artifacts=[],
             warnings=warnings,
             errors=errors,
+        )
+
+    def _verification_preflight_blocked_response(
+        self,
+        preflight: VerificationPreflightResult,
+    ) -> AgentResponse:
+        """Return a structured response for a preflight-blocked verification request.
+
+        Used when restricted-mode hard mismatch is detected before session creation.
+        """
+        from claude_agent_mcp.runtime.verification_preflight import OPERATOR_GUIDANCE
+
+        # Use fail_closed as the canonical verdict for a policy block
+        verdict = VerificationVerdict.fail_closed
+        (
+            decision,
+            primary_reason,
+            reason_codes,
+            evidence_sufficiency,
+            scope_assessment,
+            profile_alignment,
+        ) = map_verdict_to_assessment(verdict, preflight)
+        operator_guidance = collect_operator_guidance(reason_codes)
+
+        # Use primary_reason as the summary for clarity
+        primary_msg = primary_reason.value.replace("_", " ")
+        summary = f"Verification blocked: {primary_msg}"
+
+        return AgentResponse(
+            ok=False,
+            session_id="",
+            status=SessionStatus.failed,
+            workflow=WorkflowName.verify_task,
+            profile=ProfileName.verification,
+            summary=summary,
+            result={
+                "verdict": verdict.value,
+                "findings": [],
+                "contradictions": [],
+                "missing_evidence": [],
+                "restrictions": [],
+                "decision": decision.value,
+                "primary_reason": primary_reason.value,
+                "reason_codes": [rc.value for rc in reason_codes],
+                "operator_guidance": operator_guidance,
+                "evidence_sufficiency": evidence_sufficiency.value,
+                "scope_assessment": scope_assessment.value,
+                "profile_alignment": profile_alignment.value,
+            },
+            artifacts=[],
+            warnings=preflight.hints,
+            errors=[
+                ErrorObject(
+                    code=code.value,
+                    message=(OPERATOR_GUIDANCE.get(code, [code.value])[0]),
+                )
+                for code in preflight.lint_codes
+            ],
         )

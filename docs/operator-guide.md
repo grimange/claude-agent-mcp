@@ -1,4 +1,4 @@
-# Operator Guide (v1.1.0)
+# Operator Guide (v1.1.1)
 
 This guide covers how to configure, deploy, and inspect `claude-agent-mcp` in production.
 
@@ -405,3 +405,109 @@ export CLAUDE_AGENT_MCP_ALLOWED_DIRS=/home/user/project
 Activating APNTalk mode is strictly additive. Standard mode behavior and the full tool surface remain identical when `CLAUDE_AGENT_MCP_MODE` is not set or is `standard`.
 
 Restriction proof fields in `agent_get_runtime_status` are `null` in standard mode.
+
+---
+
+## 13. Verification result interpretation (v1.1.1)
+
+`agent_verify_task` returns structured, machine-readable reason codes and assessment fields alongside the traditional `verdict` and `findings`. These fields make it easier to distinguish between a weak request, a policy mismatch, and a genuine evidence failure.
+
+### Richer result fields
+
+In addition to the existing `verdict`, `findings`, `contradictions`, `missing_evidence`, and `restrictions` fields, results now include:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `decision` | string | Top-level decision: `verified`, `not_verified`, or `inconclusive` |
+| `primary_reason` | string | Most actionable reason code for the outcome |
+| `reason_codes` | array | All applicable stable reason codes |
+| `operator_guidance` | array | Short actionable hint strings |
+| `evidence_sufficiency` | string | `sufficient`, `partial`, or `insufficient` |
+| `scope_assessment` | string | `narrow`, `acceptable`, `broad`, or `too_broad` |
+| `profile_alignment` | string | `in_profile`, `out_of_profile`, or `restricted_mode_mismatch` |
+
+### Verification reason taxonomy
+
+Reason codes are stable and grouped into three conceptual categories:
+
+**Evidence reasons**
+- `sufficient_evidence` — Evidence supports the claim.
+- `insufficient_evidence` — Evidence is absent, weak, or inconclusive.
+
+**Request-quality reasons**
+- `scope_too_broad` — Request covers too many artifacts or objectives.
+- `ambiguous_request` — Verification goal is unclear or multi-valued.
+- `missing_required_context` — No named target, artifact, or evidence anchor.
+- `non_verifiable_request` — Cannot be answered through passive evidence review.
+
+**Policy/profile reasons**
+- `out_of_profile_request` — Request exceeds the active verification profile.
+- `restricted_mode_mismatch` — Request is incompatible with APNTalk verification mode.
+
+### Narrow verification requests (recommended form)
+
+These requests produce high-signal results:
+
+```
+"Verify whether src/claude_agent_mcp/server.py exposes only the admitted tool pair."
+"Check whether the runtime status proof confirms restricted mode is active."
+"Verify whether the exposed tool list is exactly ['agent_get_runtime_status', 'agent_verify_task']."
+"Confirm that the restriction_contract_id field is 'apntalk_verification_v1'."
+```
+
+Each example:
+- names a specific artifact or observable property
+- has one verification objective
+- has a concrete pass/fail criterion
+
+### Broad verification requests (likely to produce low-signal results)
+
+These requests produce weak or inconclusive results:
+
+| Request | Likely codes |
+|---------|-------------|
+| "Review the whole system." | `scope_too_broad` |
+| "Tell me if everything is safe." | `scope_too_broad`, `missing_required_context` |
+| "Validate the entire repo." | `scope_too_broad` |
+| "Check whether the whole integration is correct." | `scope_too_broad` |
+| "Fix the authentication module." | `out_of_profile_request` (standard) or `restricted_mode_mismatch` (APNTalk) |
+
+### APNTalk restricted mode
+
+In APNTalk verification mode, execution-oriented requests (those using verbs like `fix`, `create`, `write`, `modify`) are blocked before session creation. The response will include:
+
+```json
+{
+  "ok": false,
+  "session_id": "",
+  "result": {
+    "verdict": "fail_closed",
+    "decision": "not_verified",
+    "primary_reason": "restricted_mode_mismatch",
+    "reason_codes": ["restricted_mode_mismatch", "insufficient_evidence"],
+    "operator_guidance": [
+      "The active APNTalk verification mode only permits bounded advisory verification tasks.",
+      "Reframe the request as a specific, observable claim to verify against existing evidence."
+    ],
+    "profile_alignment": "restricted_mode_mismatch"
+  }
+}
+```
+
+This is a hard policy block. No session is created and no execution occurs.
+
+### Distinguishing failure types
+
+Use `primary_reason` to distinguish:
+
+| `primary_reason` | Meaning |
+|-----------------|---------|
+| `sufficient_evidence` | Evidence supported the claim |
+| `insufficient_evidence` | Evidence was absent or inconclusive |
+| `scope_too_broad` | Request was too wide — narrow the scope |
+| `out_of_profile_request` | Request exceeded the verification profile |
+| `restricted_mode_mismatch` | Request was incompatible with APNTalk mode |
+| `missing_required_context` | No named subject or evidence anchor provided |
+| `ambiguous_request` | Goal was unclear — clarify with a specific claim |
+
+A request with `primary_reason=scope_too_broad` was not "verified as failing" — it was simply too broad to evaluate. Narrow the request and retry.

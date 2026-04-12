@@ -7,6 +7,95 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.1] — 2026-04-13
+
+### Verification UX, reason taxonomy, and preflight guidance
+
+v1.1.1 improves operator usability of `agent_verify_task` by making low-signal,
+broad, and out-of-profile requests easier to interpret. No new execution capability
+is introduced. All safety boundaries and fail-closed guarantees from v1.1.0 are
+preserved unchanged.
+
+#### Added
+
+- **`VerificationReasonCode` enum** (`types.py`) — eight stable machine-readable
+  reason codes for verification outcomes:
+  - Evidence reasons: `sufficient_evidence`, `insufficient_evidence`
+  - Request-quality reasons: `scope_too_broad`, `ambiguous_request`,
+    `missing_required_context`, `non_verifiable_request`
+  - Policy/profile reasons: `out_of_profile_request`, `restricted_mode_mismatch`
+
+- **`VerificationDecision` enum** (`types.py`) — top-level decision code:
+  `verified`, `not_verified`, `inconclusive`
+
+- **`EvidenceSufficiency` enum** (`types.py`) — `sufficient`, `partial`, `insufficient`
+
+- **`ScopeAssessment` enum** (`types.py`) — `narrow`, `acceptable`, `broad`, `too_broad`
+
+- **`ProfileAlignment` enum** (`types.py`) — `in_profile`, `out_of_profile`,
+  `restricted_mode_mismatch`
+
+- **`VerificationRequestShape` model** (`types.py`) — heuristic analysis of request
+  breadth and specificity. Fields: `is_narrow`, `breadth_score`, `detected_targets`,
+  `detected_risks`.
+
+- **`VerificationPreflightResult` model** (`types.py`) — lightweight preflight lint
+  result. Fields: `ok`, `lint_codes`, `hints`, `normalized_scope_summary`. In
+  restricted APNTalk mode, `ok=False` signals a hard mismatch that blocks execution.
+
+- **`runtime/verification_preflight.py`** — deterministic preflight module:
+  - `analyze_request_shape()` — four-signal breadth heuristic (multiple asks,
+    broad language, execution verbs, missing target)
+  - `run_preflight()` — lint pass; produces `VerificationPreflightResult`;
+    restricted-mode execution-verb requests are hard blockers (`ok=False`)
+  - `map_verdict_to_assessment()` — maps `VerificationVerdict` + preflight to
+    structured assessment tuple: decision, primary_reason, reason_codes,
+    evidence_sufficiency, scope_assessment, profile_alignment
+  - `collect_operator_guidance()` — returns deduplicated actionable hint strings
+  - `OPERATOR_GUIDANCE` — deterministic mapping from each reason code to hint text
+
+- **Richer `agent_verify_task` result fields** (`workflow_executor.py`) — result
+  payload now includes additive structured fields:
+  `decision`, `primary_reason`, `reason_codes`, `operator_guidance`,
+  `evidence_sufficiency`, `scope_assessment`, `profile_alignment`.
+  All prior fields (`verdict`, `findings`, `contradictions`, `missing_evidence`,
+  `restrictions`) remain unchanged.
+
+- **Preflight integrated into `agent_verify_task`** — flow:
+  1. Run preflight / request-shape analysis
+  2. In restricted mode: execution-verb requests return structured blocked response
+     immediately (before session creation)
+  3. Otherwise: continue verification; include preflight findings in final result
+
+- **`docs/operator-guide.md`** — section 13: narrow verification request guidance,
+  reason taxonomy reference, good/bad request examples
+
+#### Preserved
+
+- No new MCP tool added
+- All restricted-mode tool-surface restrictions unchanged
+- All fail-closed semantics unchanged
+- All v1.1.0 restriction proof fields unchanged
+- All prior `agent_verify_task` result fields present and unchanged
+
+#### Tests
+
+- `tests/test_v111_verification_ux.py` — 79 new tests covering:
+  - Enum stability and values
+  - Model field presence
+  - `analyze_request_shape` heuristics (narrow, broad, execution verbs, targets)
+  - `run_preflight` behavior (standard and restricted mode)
+  - `map_verdict_to_assessment` determinism and all verdict mappings
+  - `collect_operator_guidance` content and deduplication
+  - `OPERATOR_GUIDANCE` coverage for all major codes
+  - Integration: all new result fields present
+  - Integration: decision, primary_reason, reason_codes correct for each verdict
+  - Integration: broad request classification
+  - Integration: restricted-mode hard mismatch blocks before session creation
+  - Backward compatibility: all prior result fields still present
+
+---
+
 ## [1.0.2] — 2026-04-12
 
 ### Fixed

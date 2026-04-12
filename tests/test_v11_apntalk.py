@@ -531,8 +531,8 @@ def test_valid_modes_set_contains_both():
 # ---------------------------------------------------------------------------
 
 
-def test_server_version_is_1_1_0():
-    assert SERVER_VERSION == "1.1.0"
+def test_server_version_is_1_1_1():
+    assert SERVER_VERSION == "1.1.1"
 
 
 def test_inspector_version_is_1_1_0():
