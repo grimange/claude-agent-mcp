@@ -6,14 +6,20 @@ and required transport for MCP host (e.g. Claude Desktop) integration.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
 import mcp.server.stdio
+from mcp.server import NotificationOptions
 from mcp.server.models import InitializationOptions
 
 from claude_agent_mcp.logging import get_logger
 
 logger = get_logger(__name__)
 
-VERSION = "0.2.0"
+try:
+    _VERSION = _pkg_version("claude-agent-mcp")
+except PackageNotFoundError:
+    _VERSION = "unknown"
 
 
 async def run_stdio(server, session_store) -> None:
@@ -31,9 +37,9 @@ async def run_stdio(server, session_store) -> None:
             write_stream,
             InitializationOptions(
                 server_name="claude-agent-mcp",
-                server_version=VERSION,
+                server_version=_VERSION,
                 capabilities=server.get_capabilities(
-                    notification_options=None,
+                    notification_options=NotificationOptions(),
                     experimental_capabilities={},
                 ),
             ),

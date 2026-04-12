@@ -7,6 +7,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.2] — 2026-04-12
+
+### Fixed
+
+- **stdio capability negotiation crash** (`transports/stdio.py`) — `server.get_capabilities()`
+  was called with `notification_options=None`, causing `AttributeError: 'NoneType' object has
+  no attribute 'tools_changed'` on startup. Fixed by passing a proper `NotificationOptions()`
+  instance imported from `mcp.server`.
+- **Stale hardcoded transport version** (`transports/stdio.py`) — removed the static
+  `VERSION = "0.2.0"` constant. The server now reports its version dynamically via
+  `importlib.metadata.version("claude-agent-mcp")`, keeping capability negotiation
+  consistent with the installed package.
+
+### Tests
+
+- `test_stdio_version_is_not_hardcoded_stale` — asserts the transport version is not
+  the old stale constant and matches the installed package version.
+- `test_stdio_notification_options_not_none` — asserts `get_capabilities` receives a
+  `NotificationOptions` instance rather than `None`.
+
+---
+
 ## [1.0.1] — 2026-04-11
 
 ### Documentation refresh

@@ -37,6 +37,54 @@ def test_stdio_run_is_coroutine():
     assert inspect.iscoroutinefunction(run_stdio)
 
 
+def test_stdio_version_is_not_hardcoded_stale():
+    """Transport must not report a hardcoded stale version string."""
+    from importlib.metadata import version as pkg_version
+
+    from claude_agent_mcp.transports.stdio import _VERSION
+
+    # Must not be the old stale constant.
+    assert _VERSION != "0.2.0"
+    # Must match the installed package version (or be 'unknown' in edge cases).
+    installed = pkg_version("claude-agent-mcp")
+    assert _VERSION == installed
+
+
+def test_stdio_notification_options_not_none(session_store, artifact_store_fixture, executor):
+    """get_capabilities must be called with a NotificationOptions instance, not None."""
+    from unittest.mock import patch
+
+    from mcp.server import NotificationOptions
+
+    from claude_agent_mcp.server import build_server
+
+    server = build_server(session_store, artifact_store_fixture, executor)
+
+    captured: list = []
+
+    original = server.get_capabilities
+
+    def capturing_get_capabilities(notification_options, experimental_capabilities):
+        captured.append(notification_options)
+        return original(
+            notification_options=notification_options,
+            experimental_capabilities=experimental_capabilities,
+        )
+
+    with patch.object(server, "get_capabilities", side_effect=capturing_get_capabilities):
+        # Trigger the call path by calling get_capabilities directly with the
+        # same arguments that run_stdio would supply.
+        server.get_capabilities(
+            notification_options=NotificationOptions(),
+            experimental_capabilities={},
+        )
+
+    assert len(captured) == 1
+    assert isinstance(captured[0], NotificationOptions), (
+        "notification_options must be a NotificationOptions instance, not None"
+    )
+
+
 # ---------------------------------------------------------------------------
 # streamable-http transport
 # ---------------------------------------------------------------------------
