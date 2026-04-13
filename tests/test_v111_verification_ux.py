@@ -149,7 +149,7 @@ def test_verification_reason_code_values_stable():
 
 
 def test_verification_decision_values_stable():
-    assert {d.value for d in VerificationDecision} == {"verified", "not_verified", "inconclusive"}
+    assert {d.value for d in VerificationDecision} == {"verified", "not_verified", "inconclusive", "unavailable"}
 
 
 def test_evidence_sufficiency_values_stable():

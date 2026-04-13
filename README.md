@@ -4,7 +4,7 @@
 
 Sessions persist in SQLite across server restarts. Both the Anthropic API and the Claude Code CLI are supported as execution backends. All tool responses share a single normalized response envelope regardless of which backend is active.
 
-**v1.1.1 · Python 3.11+ · stdio transport · SQLite persistence**
+**v1.1.2 · Python 3.11+ · stdio transport · SQLite persistence**
 
 ---
 
@@ -16,6 +16,7 @@ Sessions persist in SQLite across server restarts. Both the Anthropic API and th
 - **Session continuation** — resume any past session from any MCP client with full context
 - **Policy-bounded execution** — profiles control permissions, turn limits, and directory access
 - **Structured verification** — evidence-based evaluation with fail-closed semantics; structured reason codes, operator guidance, and scope assessment (v1.1.1)
+- **Backend availability signaling** — machine-stable failure classification for CLI failures, auth errors, quota exhaustion, and empty responses; `outcome_kind`, `failure_class`, `retryable`, and `fallback_recommended` fields for orchestrator routing (v1.1.2)
 - **Runtime status inspection** — confirm active configuration without side effects
 - **APNTalk verification mode** — server-level restricted surface: verification-only, advisory-only, machine-verifiable, fail-closed (v1.1.0)
 - **Optional downstream federation** — expose other MCP server tools to Claude under explicit operator allowlists
@@ -190,6 +191,7 @@ The result includes a verdict (`pass`, `pass_with_restrictions`, `fail_closed`, 
   "result": {
     "verdict": "fail_closed",
     "decision": "not_verified",
+    "outcome_kind": "not_verified",
     "primary_reason": "insufficient_evidence",
     "reason_codes": ["insufficient_evidence"],
     "operator_guidance": [
@@ -198,6 +200,11 @@ The result includes a verdict (`pass`, `pass_with_restrictions`, `fail_closed`, 
     "evidence_sufficiency": "insufficient",
     "scope_assessment": "narrow",
     "profile_alignment": "in_profile",
+    "failure_class": null,
+    "failure_code": null,
+    "retryable": false,
+    "fallback_recommended": false,
+    "verification_performed": true,
     "findings": [],
     "contradictions": [],
     "missing_evidence": ["session token storage policy not found in provided evidence"],
@@ -206,7 +213,7 @@ The result includes a verdict (`pass`, `pass_with_restrictions`, `fail_closed`, 
 }
 ```
 
-Use `primary_reason` to distinguish evidence failures from scope problems and profile mismatches. See [docs/operator-guide.md — Verification result interpretation](docs/operator-guide.md) for the full reason taxonomy and request guidance.
+Use `primary_reason` to distinguish evidence failures from scope problems and profile mismatches. When the backend is unavailable, `outcome_kind` is `"unavailable"` and `failure_class` / `failure_code` carry stable machine-readable codes for orchestrator routing. See [docs/operator-guide.md — Verification result interpretation](docs/operator-guide.md) for the full reason taxonomy, request guidance, and backend availability failure reference.
 
 ---
 
@@ -236,7 +243,7 @@ From any connected MCP client, call `agent_get_runtime_status` with an empty req
 
 ## Limitations
 
-These are the current boundaries of the v1.1.1 release.
+These are the current boundaries of the v1.1.2 release.
 
 - **No in-flight cancellation** — sessions run to completion or timeout; there is no cancel signal
 - **No artifact browsing tools** — artifact read and list tools are not yet exposed via MCP
@@ -368,4 +375,4 @@ Run tests:
 pytest tests/ -v
 ```
 
-644 tests covering sessions, policy enforcement, tool contracts, transports, federation, backends, verification (including reason taxonomy and preflight), continuation context, and execution mediation.
+700 tests covering sessions, policy enforcement, tool contracts, transports, federation, backends, verification (including reason taxonomy, preflight, and backend availability failure classification), continuation context, and execution mediation.

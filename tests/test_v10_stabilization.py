@@ -619,8 +619,8 @@ def test_format_federation_inactive_warning():
 # ---------------------------------------------------------------------------
 
 
-def test_server_version_is_1_1_1():
-    assert SERVER_VERSION == "1.1.1"
+def test_server_version_is_1_1_2():
+    assert SERVER_VERSION == "1.1.2"
 
 
 def test_v01_tool_contracts_preserved():

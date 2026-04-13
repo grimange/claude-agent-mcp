@@ -21,6 +21,9 @@ from typing import Any
 from claude_agent_mcp.config import Config
 from claude_agent_mcp.errors import (
     AgentMCPError,
+    ClaudeCodeInvocationError,
+    ClaudeCodeUnavailableError,
+    NormalizationError,
     PolicyDeniedError,
     ProviderRuntimeError,
     SessionStatusError,
@@ -37,6 +40,11 @@ from claude_agent_mcp.runtime.session_store import SessionStore
 from claude_agent_mcp.runtime.mediation_engine import (
     MediationEngine,
     POLICY_APPROVED,
+)
+from claude_agent_mcp.runtime.verification_failure import (
+    FailureClassificationResult,
+    classify_backend_failure,
+    classify_empty_response,
 )
 from claude_agent_mcp.runtime.verification_preflight import (
     collect_operator_guidance,
@@ -55,11 +63,17 @@ from claude_agent_mcp.types import (
     MediatedWorkflowRequest,
     MediatedWorkflowResult,
     MediatedWorkflowStepResult,
+    EvidenceSufficiency,
     NormalizedProviderResult,
     NormalizedVerificationResult,
+    ProfileAlignment,
     ProfileName,
     RunTaskRequest,
+    ScopeAssessment,
     SessionStatus,
+    VerificationDecision,
+    VerificationFailureClass,
+    VerificationFailureCode,
     VerificationPreflightResult,
     VerificationReasonCode,
     VerificationVerdict,
@@ -663,68 +677,101 @@ class WorkflowExecutor:
 
             warnings.extend(raw_result.warnings)
 
-            ver_result = self._parse_verification_result(
-                raw_result.output_text, req.fail_closed
-            )
-            summary = f"Verification {ver_result.verdict.value}: {len(ver_result.findings)} finding(s)"
+            # SHORT-CIRCUIT (v1.1.2): empty response is an operational failure,
+            # not an evidence failure.  Do not continue into verification parsing.
+            if not raw_result.output_text.strip():
+                classification = classify_empty_response()
+                await self._sessions.update_session(session_id, status=SessionStatus.failed)
+                await self._sessions.append_event(
+                    session_id, EventType.error_event, 0,
+                    {"error": classification.failure_code.value, "summary": classification.summary},
+                )
+                response = self._verification_unavailable_response(
+                    session_id, classification, preflight
+                )
+            else:
+                ver_result = self._parse_verification_result(
+                    raw_result.output_text, req.fail_closed
+                )
+                summary = f"Verification {ver_result.verdict.value}: {len(ver_result.findings)} finding(s)"
 
+                await self._sessions.append_event(
+                    session_id, EventType.provider_response_summary, raw_result.turn_count,
+                    {"verdict": ver_result.verdict.value, "summary": summary}
+                )
+                await self._sessions.append_event(
+                    session_id, EventType.workflow_normalization, raw_result.turn_count,
+                    {"verdict": ver_result.verdict.value}
+                )
+
+                await self._sessions.update_session(
+                    session_id,
+                    status=SessionStatus.completed,
+                    turn_count=raw_result.turn_count,
+                    summary_latest=summary,
+                )
+
+                artifact_refs = await self._save_verification_report(
+                    session_id, ver_result, raw_result.output_text, profile, raw_result.turn_count
+                )
+
+                # Build richer structured result (v1.1.1 / v1.1.2)
+                (
+                    decision,
+                    primary_reason,
+                    reason_codes,
+                    evidence_sufficiency,
+                    scope_assessment,
+                    profile_alignment,
+                ) = map_verdict_to_assessment(ver_result.verdict, preflight)
+                operator_guidance = collect_operator_guidance(reason_codes)
+
+                response = AgentResponse(
+                    ok=True,
+                    session_id=session_id,
+                    status=SessionStatus.completed,
+                    workflow=WorkflowName.verify_task,
+                    profile=ProfileName.verification,
+                    summary=summary,
+                    result={
+                        # Core verdict fields (backward-compatible)
+                        "verdict": ver_result.verdict.value,
+                        "findings": ver_result.findings,
+                        "contradictions": ver_result.contradictions,
+                        "missing_evidence": ver_result.missing_evidence,
+                        "restrictions": ver_result.restrictions,
+                        # Richer structured fields (v1.1.1)
+                        "decision": decision.value,
+                        "primary_reason": primary_reason.value,
+                        "reason_codes": [rc.value for rc in reason_codes],
+                        "operator_guidance": operator_guidance,
+                        "evidence_sufficiency": evidence_sufficiency.value,
+                        "scope_assessment": scope_assessment.value,
+                        "profile_alignment": profile_alignment.value,
+                        # Dependability fields (v1.1.2)
+                        "outcome_kind": decision.value,
+                        "failure_class": None,
+                        "failure_code": None,
+                        "retryable": False,
+                        "fallback_recommended": False,
+                        "verification_performed": True,
+                    },
+                    artifacts=artifact_refs,
+                    warnings=warnings,
+                    errors=errors,
+                )
+
+        except (ClaudeCodeUnavailableError, ClaudeCodeInvocationError, NormalizationError) as exc:
+            # SHORT-CIRCUIT (v1.1.2): backend / provider availability failure.
+            # Do not let these surface as inconclusive or not_verified outcomes.
+            logger.warning("Backend unavailable in verify_task: %s", exc)
+            await self._sessions.update_session(session_id, status=SessionStatus.failed)
             await self._sessions.append_event(
-                session_id, EventType.provider_response_summary, raw_result.turn_count,
-                {"verdict": ver_result.verdict.value, "summary": summary}
+                session_id, EventType.error_event, 0, {"error": str(exc)[:256]}
             )
-            await self._sessions.append_event(
-                session_id, EventType.workflow_normalization, raw_result.turn_count,
-                {"verdict": ver_result.verdict.value}
-            )
-
-            await self._sessions.update_session(
-                session_id,
-                status=SessionStatus.completed,
-                turn_count=raw_result.turn_count,
-                summary_latest=summary,
-            )
-
-            artifact_refs = await self._save_verification_report(
-                session_id, ver_result, raw_result.output_text, profile, raw_result.turn_count
-            )
-
-            # Build richer structured result (v1.1.1)
-            (
-                decision,
-                primary_reason,
-                reason_codes,
-                evidence_sufficiency,
-                scope_assessment,
-                profile_alignment,
-            ) = map_verdict_to_assessment(ver_result.verdict, preflight)
-            operator_guidance = collect_operator_guidance(reason_codes)
-
-            response = AgentResponse(
-                ok=True,
-                session_id=session_id,
-                status=SessionStatus.completed,
-                workflow=WorkflowName.verify_task,
-                profile=ProfileName.verification,
-                summary=summary,
-                result={
-                    # Core verdict fields (backward-compatible)
-                    "verdict": ver_result.verdict.value,
-                    "findings": ver_result.findings,
-                    "contradictions": ver_result.contradictions,
-                    "missing_evidence": ver_result.missing_evidence,
-                    "restrictions": ver_result.restrictions,
-                    # Richer structured fields (v1.1.1)
-                    "decision": decision.value,
-                    "primary_reason": primary_reason.value,
-                    "reason_codes": [rc.value for rc in reason_codes],
-                    "operator_guidance": operator_guidance,
-                    "evidence_sufficiency": evidence_sufficiency.value,
-                    "scope_assessment": scope_assessment.value,
-                    "profile_alignment": profile_alignment.value,
-                },
-                artifacts=artifact_refs,
-                warnings=warnings,
-                errors=errors,
+            classification = classify_backend_failure(exc)
+            response = self._verification_unavailable_response(
+                session_id, classification, preflight
             )
 
         except AgentMCPError as exc:
@@ -1500,6 +1547,13 @@ class WorkflowExecutor:
                 "evidence_sufficiency": evidence_sufficiency.value,
                 "scope_assessment": scope_assessment.value,
                 "profile_alignment": profile_alignment.value,
+                # Dependability fields (v1.1.2)
+                "outcome_kind": decision.value,
+                "failure_class": None,
+                "failure_code": None,
+                "retryable": False,
+                "fallback_recommended": False,
+                "verification_performed": False,
             },
             artifacts=[],
             warnings=warnings,
@@ -1513,6 +1567,7 @@ class WorkflowExecutor:
         """Return a structured response for a preflight-blocked verification request.
 
         Used when restricted-mode hard mismatch is detected before session creation.
+        outcome_kind is 'not_verified' (policy block), not 'unavailable' (operational failure).
         """
         from claude_agent_mcp.runtime.verification_preflight import OPERATOR_GUIDANCE
 
@@ -1552,6 +1607,13 @@ class WorkflowExecutor:
                 "evidence_sufficiency": evidence_sufficiency.value,
                 "scope_assessment": scope_assessment.value,
                 "profile_alignment": profile_alignment.value,
+                # Dependability fields (v1.1.2): policy block is NOT an availability failure
+                "outcome_kind": decision.value,
+                "failure_class": None,
+                "failure_code": None,
+                "retryable": False,
+                "fallback_recommended": False,
+                "verification_performed": False,
             },
             artifacts=[],
             warnings=preflight.hints,
@@ -1561,5 +1623,91 @@ class WorkflowExecutor:
                     message=(OPERATOR_GUIDANCE.get(code, [code.value])[0]),
                 )
                 for code in preflight.lint_codes
+            ],
+        )
+
+    def _verification_unavailable_response(
+        self,
+        session_id: str,
+        classification: FailureClassificationResult,
+        preflight: VerificationPreflightResult,
+    ) -> AgentResponse:
+        """Return a machine-stable unavailable result when the backend cannot run.
+
+        outcome_kind = 'unavailable', verification_performed = False.
+        Distinct from policy blocks (not_verified) and evidence failures.
+
+        Used when:
+        - ClaudeCodeUnavailableError is raised
+        - ClaudeCodeInvocationError is raised (timeout, auth, limit, process)
+        - NormalizationError is raised
+        - Empty response is returned from the backend
+        """
+        from claude_agent_mcp.runtime.verification_preflight import (
+            collect_operator_guidance as _guidance,
+        )
+
+        # Derive scope/alignment from the preflight that ran before the backend call.
+        # These are the only pre-execution assessments available.
+        if VerificationReasonCode.scope_too_broad in preflight.lint_codes:
+            scope_assessment = ScopeAssessment.too_broad
+        elif VerificationReasonCode.ambiguous_request in preflight.lint_codes:
+            scope_assessment = ScopeAssessment.broad
+        elif preflight.lint_codes:
+            scope_assessment = ScopeAssessment.acceptable
+        else:
+            scope_assessment = ScopeAssessment.narrow
+
+        if VerificationReasonCode.restricted_mode_mismatch in preflight.lint_codes:
+            profile_alignment = ProfileAlignment.restricted_mode_mismatch
+        elif VerificationReasonCode.out_of_profile_request in preflight.lint_codes:
+            profile_alignment = ProfileAlignment.out_of_profile
+        else:
+            profile_alignment = ProfileAlignment.in_profile
+
+        # Guidance for the operator: insufficient_evidence is the closest
+        # verification-domain signal (verification did not run = no evidence).
+        reason_codes = [VerificationReasonCode.insufficient_evidence]
+        operator_guidance = _guidance(reason_codes)
+
+        summary = f"Verification unavailable: {classification.summary}"
+
+        return AgentResponse(
+            ok=False,
+            session_id=session_id,
+            status=SessionStatus.failed,
+            workflow=WorkflowName.verify_task,
+            profile=ProfileName.verification,
+            summary=summary,
+            result={
+                # Core verdict fields (backward-compatible; fail_closed is the safe value)
+                "verdict": VerificationVerdict.fail_closed.value,
+                "findings": [],
+                "contradictions": [],
+                "missing_evidence": [],
+                "restrictions": [],
+                # v1.1.1 fields
+                "decision": VerificationDecision.unavailable.value,
+                "primary_reason": VerificationReasonCode.insufficient_evidence.value,
+                "reason_codes": [rc.value for rc in reason_codes],
+                "operator_guidance": operator_guidance,
+                "evidence_sufficiency": EvidenceSufficiency.insufficient.value,
+                "scope_assessment": scope_assessment.value,
+                "profile_alignment": profile_alignment.value,
+                # v1.1.2 dependability fields
+                "outcome_kind": VerificationDecision.unavailable.value,
+                "failure_class": classification.failure_class.value,
+                "failure_code": classification.failure_code.value,
+                "retryable": classification.retryable,
+                "fallback_recommended": classification.fallback_recommended,
+                "verification_performed": False,
+            },
+            artifacts=[],
+            warnings=[],
+            errors=[
+                ErrorObject(
+                    code=classification.failure_code.value,
+                    message=classification.summary,
+                )
             ],
         )

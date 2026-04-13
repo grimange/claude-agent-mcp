@@ -7,6 +7,90 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.2] — 2026-04-13
+
+### Dependability hardening: backend failure detection and unavailable result classification
+
+v1.1.2 adds machine-stable failure classification for Claude Code backend failures in the
+verification workflow. When the backend cannot run (CLI missing, auth expired, quota exhausted,
+timeout, empty or unparseable response), the result now carries `outcome_kind = "unavailable"`
+with structured `failure_class` and `failure_code` fields — distinct from verification-domain
+outcomes (`not_verified`, `inconclusive`). Orchestrators such as APNTalk and Codex can route
+on these codes without text-parsing the summary.
+
+No new MCP tools. No changes to existing result fields. All fail-closed and restricted-mode
+guarantees preserved.
+
+#### Added
+
+- **`VerificationFailureClass` enum** (`types.py`) — six operational failure categories:
+  `backend_unavailable`, `backend_limit_reached`, `backend_timeout`, `backend_auth_failure`,
+  `backend_invocation_error`, `backend_unusable_response`
+
+- **`VerificationFailureCode` enum** (`types.py`) — seven granular failure codes:
+  `claude_code_not_installed`, `claude_code_not_authenticated`, `claude_code_limit_reached`,
+  `claude_code_timeout`, `claude_code_process_error`, `claude_code_empty_response`,
+  `claude_code_unparseable_response`
+
+- **`VerificationDecision.unavailable`** (`types.py`) — new decision value for operational
+  failures. Existing values (`verified`, `not_verified`, `inconclusive`) are unchanged.
+
+- **`runtime/verification_failure.py`** — operational failure classification module:
+  - `FailureClassificationResult` — frozen dataclass: `failure_class`, `failure_code`,
+    `retryable`, `fallback_recommended`, `summary`
+  - `classify_backend_failure(exc)` — classifies `ClaudeCodeUnavailableError`,
+    `ClaudeCodeInvocationError` (timeout / auth / limit / process), `NormalizationError`,
+    and unknown exceptions into stable `FailureClassificationResult` values
+  - `classify_empty_response()` — classifies blank/whitespace-only backend output
+  - `RETRYABLE_CLASSES` — `{backend_limit_reached, backend_timeout, backend_unusable_response}`
+  - `FALLBACK_RECOMMENDED_CLASSES` — all six failure classes recommend fallback
+
+- **New `agent_verify_task` result fields** (additive; `workflow_executor.py`):
+  - `outcome_kind` — `"verified"`, `"not_verified"`, `"inconclusive"`, or `"unavailable"`
+  - `failure_class` — `VerificationFailureClass` value or `null` when verification ran
+  - `failure_code` — `VerificationFailureCode` value or `null` when verification ran
+  - `retryable` — `true` when a retry after delay may succeed
+  - `fallback_recommended` — `true` when external fallback verifier is appropriate
+  - `verification_performed` — `true` only when backend ran and returned parseable output
+
+- **Short-circuit before pseudo-verification** (`workflow_executor.py`):
+  - Backend exceptions (`ClaudeCodeUnavailableError`, `ClaudeCodeInvocationError`,
+    `NormalizationError`) are caught before `AgentMCPError` and produce an unavailable
+    result without further processing
+  - Empty/whitespace response short-circuits before `_parse_verification_result()`
+  - Both paths set `verification_performed = False`, `ok = False`, `verdict = "fail_closed"`,
+    and include the structured failure codes
+
+#### Preserved
+
+- All prior `agent_verify_task` result fields present and unchanged
+  (`verdict`, `findings`, `contradictions`, `missing_evidence`, `restrictions`,
+  `decision`, `primary_reason`, `reason_codes`, `operator_guidance`,
+  `evidence_sufficiency`, `scope_assessment`, `profile_alignment`)
+- Restricted-mode execution-verb hard blocks still occur before session creation
+- All fail-closed semantics and APNTalk tool-surface restrictions unchanged
+- No new MCP tools; no breaking changes to any tool contract
+
+#### Tests
+
+- `tests/test_v112_dependability.py` — 56 new tests covering:
+  - Enum stability: `VerificationFailureClass`, `VerificationFailureCode`
+  - `FailureClassificationResult` structure and immutability
+  - `RETRYABLE_CLASSES` and `FALLBACK_RECOMMENDED_CLASSES` policy
+  - `classify_backend_failure` — all exception branches (unavailable, timeout, auth,
+    limit, normalization error, unknown exception)
+  - `classify_empty_response`
+  - No pseudo-verification leakage: `outcome_kind = "unavailable"` for all backend
+    failures, never `"not_verified"` or `"inconclusive"`
+  - Integration: all six failure paths produce correct `failure_class` / `failure_code`
+  - Integration: `verification_performed = False` for all backend failures
+  - Integration: retry/fallback signal correctness across all failure types
+  - Regression: normal verification result fields and backward compat intact
+  - Regression: restricted-mode preflight block still fires before backend
+  - Regression: fail-closed missing-evidence path still distinct from unavailable
+
+---
+
 ## [1.1.1] — 2026-04-13
 
 ### Verification UX, reason taxonomy, and preflight guidance

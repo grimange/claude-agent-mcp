@@ -1,4 +1,4 @@
-# Operator Guide (v1.1.1)
+# Operator Guide (v1.1.2)
 
 This guide covers how to configure, deploy, and inspect `claude-agent-mcp` in production.
 
@@ -418,13 +418,19 @@ In addition to the existing `verdict`, `findings`, `contradictions`, `missing_ev
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `decision` | string | Top-level decision: `verified`, `not_verified`, or `inconclusive` |
+| `decision` | string | Top-level decision: `verified`, `not_verified`, `inconclusive`, or `unavailable` (v1.1.2) |
 | `primary_reason` | string | Most actionable reason code for the outcome |
 | `reason_codes` | array | All applicable stable reason codes |
 | `operator_guidance` | array | Short actionable hint strings |
 | `evidence_sufficiency` | string | `sufficient`, `partial`, or `insufficient` |
 | `scope_assessment` | string | `narrow`, `acceptable`, `broad`, or `too_broad` |
 | `profile_alignment` | string | `in_profile`, `out_of_profile`, or `restricted_mode_mismatch` |
+| `outcome_kind` | string | Same as `decision`; present in all results including unavailable (v1.1.2) |
+| `failure_class` | string \| null | Backend failure category when `outcome_kind = "unavailable"` (v1.1.2) |
+| `failure_code` | string \| null | Specific failure code when `outcome_kind = "unavailable"` (v1.1.2) |
+| `retryable` | boolean | `true` when a retry after a delay may succeed (v1.1.2) |
+| `fallback_recommended` | boolean | `true` when an external fallback verifier is appropriate (v1.1.2) |
+| `verification_performed` | boolean | `true` only when the backend ran and returned parseable output (v1.1.2) |
 
 ### Verification reason taxonomy
 
@@ -511,3 +517,72 @@ Use `primary_reason` to distinguish:
 | `ambiguous_request` | Goal was unclear — clarify with a specific claim |
 
 A request with `primary_reason=scope_too_broad` was not "verified as failing" — it was simply too broad to evaluate. Narrow the request and retry.
+
+---
+
+## 14. Backend availability failures (v1.1.2)
+
+When the Claude Code backend cannot execute a verification (CLI missing, credentials expired,
+quota exhausted, timeout, or empty/unparseable response), the result carries
+`outcome_kind = "unavailable"` with machine-stable `failure_class` and `failure_code` fields.
+
+This is categorically distinct from a verification-domain outcome:
+
+| `outcome_kind` | Meaning |
+|----------------|---------|
+| `verified` | Backend ran; evidence supported the claim |
+| `not_verified` | Backend ran; claim was not substantiated or policy blocked it |
+| `inconclusive` | Backend ran; evidence or scope was insufficient |
+| `unavailable` | Backend did not run; operational failure — check `failure_class` |
+
+### Failure taxonomy
+
+| `failure_class` | `failure_code` | `retryable` | Cause |
+|-----------------|----------------|-------------|-------|
+| `backend_unavailable` | `claude_code_not_installed` | false | `claude` binary not on PATH |
+| `backend_auth_failure` | `claude_code_not_authenticated` | false | `claude login` required |
+| `backend_limit_reached` | `claude_code_limit_reached` | true | Usage quota / rate limit exhausted |
+| `backend_timeout` | `claude_code_timeout` | true | CLI call timed out |
+| `backend_invocation_error` | `claude_code_process_error` | false | Subprocess failed (unclassified) |
+| `backend_unusable_response` | `claude_code_empty_response` | true | Backend returned blank output |
+| `backend_unusable_response` | `claude_code_unparseable_response` | true | Output could not be parsed |
+
+### Routing on availability failures
+
+- **`retryable = true`**: a retry after a short delay is appropriate (quota reset, transient timeout)
+- **`retryable = false`**: operator intervention required before retrying (install CLI, re-authenticate)
+- **`fallback_recommended = true`**: all unavailable outcomes recommend routing to an external fallback verifier; this is always `true` when `outcome_kind = "unavailable"`
+
+### Example unavailable result
+
+```json
+{
+  "ok": false,
+  "result": {
+    "verdict": "fail_closed",
+    "decision": "unavailable",
+    "outcome_kind": "unavailable",
+    "failure_class": "backend_limit_reached",
+    "failure_code": "claude_code_limit_reached",
+    "retryable": true,
+    "fallback_recommended": true,
+    "verification_performed": false,
+    "primary_reason": "insufficient_evidence",
+    "operator_guidance": [
+      "Provide the target artifact, expected outcome, or a bounded evidence source."
+    ]
+  }
+}
+```
+
+The `verdict` field is always `"fail_closed"` for unavailable results to ensure safe behavior
+for consumers that check only the v1.0 `verdict` field. New consumers should check `outcome_kind`
+and `failure_class` for precise routing.
+
+### Distinguishing unavailable from policy blocks
+
+Both a restricted-mode execution-verb block and a backend availability failure return `ok = false`.
+Use `outcome_kind` to distinguish:
+
+- `outcome_kind = "not_verified"` + `profile_alignment = "restricted_mode_mismatch"` → policy block (backend never called)
+- `outcome_kind = "unavailable"` + `failure_class` set → backend operational failure

@@ -210,11 +210,19 @@ class VerificationReasonCode(str, Enum):
 
 
 class VerificationDecision(str, Enum):
-    """Top-level decision code for a verification result (v1.1.1)."""
+    """Top-level decision code for a verification result (v1.1.1 / v1.1.2).
+
+    verified      — verification completed positively
+    not_verified  — verification completed but failed substantively (or policy block)
+    inconclusive  — verification completed but evidence / scope was insufficient
+    unavailable   — verification could not complete due to backend / provider failure
+                    (v1.1.2: use outcome_kind and failure_class for details)
+    """
 
     verified = "verified"
     not_verified = "not_verified"
     inconclusive = "inconclusive"
+    unavailable = "unavailable"
 
 
 class EvidenceSufficiency(str, Enum):
@@ -240,6 +248,53 @@ class ProfileAlignment(str, Enum):
     in_profile = "in_profile"
     out_of_profile = "out_of_profile"
     restricted_mode_mismatch = "restricted_mode_mismatch"
+
+
+class VerificationFailureClass(str, Enum):
+    """Broad operational failure category for backend / provider failures (v1.1.2).
+
+    These are distinct from verification-domain reason codes
+    (scope_too_broad, insufficient_evidence, etc.).  A VerificationFailureClass
+    value appears only when outcome_kind = 'unavailable'.
+
+    backend_unavailable     — CLI/binary not present or not accessible
+    backend_limit_reached   — usage quota / rate-limit exhausted
+    backend_timeout         — CLI call timed out before returning
+    backend_auth_failure    — authentication / login credentials expired or absent
+    backend_invocation_error — subprocess failed for an unclassified reason
+    backend_unusable_response — backend returned empty or unparseable output
+    """
+
+    backend_unavailable = "backend_unavailable"
+    backend_limit_reached = "backend_limit_reached"
+    backend_timeout = "backend_timeout"
+    backend_auth_failure = "backend_auth_failure"
+    backend_invocation_error = "backend_invocation_error"
+    backend_unusable_response = "backend_unusable_response"
+
+
+class VerificationFailureCode(str, Enum):
+    """Specific failure code within a VerificationFailureClass (v1.1.2).
+
+    Provides a granular, stable code for machine routing by external orchestrators
+    such as APNTalk / Codex.  Each code maps to exactly one VerificationFailureClass.
+
+    claude_code_not_installed     → backend_unavailable
+    claude_code_not_authenticated → backend_auth_failure
+    claude_code_limit_reached     → backend_limit_reached
+    claude_code_timeout           → backend_timeout
+    claude_code_process_error     → backend_invocation_error
+    claude_code_empty_response    → backend_unusable_response
+    claude_code_unparseable_response → backend_unusable_response
+    """
+
+    claude_code_not_installed = "claude_code_not_installed"
+    claude_code_not_authenticated = "claude_code_not_authenticated"
+    claude_code_limit_reached = "claude_code_limit_reached"
+    claude_code_timeout = "claude_code_timeout"
+    claude_code_process_error = "claude_code_process_error"
+    claude_code_empty_response = "claude_code_empty_response"
+    claude_code_unparseable_response = "claude_code_unparseable_response"
 
 
 class OperatorProfilePreset(str, Enum):
